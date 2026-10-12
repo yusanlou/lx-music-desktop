@@ -181,6 +181,10 @@ export const sendOpenAPIAction = async(action: LX.OpenAPI.Actions) => {
   return rendererInvoke<LX.OpenAPI.Actions, LX.OpenAPI.Status>(WIN_MAIN_RENDERER_EVENT_NAME.open_api_action, action)
 }
 
+export const sendMcpAction = async(action: LX.MCP.Actions) => {
+  return rendererInvoke<LX.MCP.Actions, LX.MCP.Status>(WIN_MAIN_RENDERER_EVENT_NAME.mcp_action, action)
+}
+
 export const saveLastStartInfo = (version: string) => {
   rendererSend(WIN_MAIN_RENDERER_EVENT_NAME.save_data, {
     path: DATA_KEYS.lastStartInfo,

@@ -13,7 +13,8 @@ transition(enter-active-class="animated slideInRight" leave-active-class="animat
           img(v-if="musicInfo.pic" :class="$style.img" :src="musicInfo.pic")
           div.description(:class="['scroll', $style.description]")
             p {{ $t('player__music_name') }}{{ musicInfo.name }}
-            p {{ $t('player__music_singer') }}{{ musicInfo.singer }}
+            p {{ $t('player__music_singer') }}
+              span(:class="$style.singerName" :aria-label="$t('player__play_artist_songs')" @click="handlePlayArtist") {{ musicInfo.singer }}
             p(v-if="musicInfo.album") {{ $t('player__music_album') }}{{ musicInfo.album }}
 
       transition(enter-active-class="animated fadeIn" leave-active-class="animated fadeOut")
@@ -39,6 +40,7 @@ import {
   setShowPlayerDetail,
   setShowPlayComment,
   setShowPlayLrcSelectContentLrc,
+  playArtist,
 } from '@renderer/store/player/action'
 import LyricPlayer from './LyricPlayer.vue'
 import PlayBar from './PlayBar.vue'
@@ -109,6 +111,13 @@ export default {
       hideComment,
       handleAfterEnter,
       handleAfterLeave,
+      handlePlayArtist() {
+        const { musicInfo } = playMusicInfo
+        if (!musicInfo) return
+        const singer = 'progress' in musicInfo ? musicInfo.metadata.musicInfo.singer : musicInfo.singer
+        const source = 'progress' in musicInfo ? musicInfo.metadata.musicInfo.source : musicInfo.source
+        void playArtist(singer, source)
+      },
       visibled,
       isFullscreen,
       fullscreenExit() {
@@ -263,6 +272,16 @@ export default {
     line-height: 1.5;
     font-size: 14px;
     overflow-wrap: break-word;
+  }
+}
+.singerName {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-style: dashed;
+  text-decoration-color: var(--color-primary);
+  transition: color @transition-normal;
+  &:hover {
+    color: var(--color-primary);
   }
 }
 

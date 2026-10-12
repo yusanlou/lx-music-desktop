@@ -13,13 +13,15 @@ import {
   playedList,
   tempPlayList,
 } from './state'
-import { getListMusicsFromCache } from '@renderer/store/list/action'
+import { getListMusicsFromCache, setTempList } from '@renderer/store/list/action'
 import { downloadList } from '@renderer/store/download/state'
 import { setProgress } from './playProgress'
-import { playNext } from '@renderer/core/player'
+import { playNext, playList as corePlayList } from '@renderer/core/player'
 import { LIST_IDS } from '@common/constants'
-import { toRaw } from '@common/utils/vueTools'
+import { toRaw, markRaw } from '@common/utils/vueTools'
 import { arrPush, arrUnshift } from '@common/utils/common'
+import music from '@renderer/utils/musicSdk'
+import { deduplicationList, toNewMusicInfo } from '@renderer/utils'
 
 
 type PlayerMusicInfoKeys = keyof typeof musicInfo
@@ -250,4 +252,35 @@ export const removeTempPlayList = (index: number) => {
  */
 export const clearTempPlayeList = () => {
   tempPlayList.splice(0, tempPlayList.length)
+}
+
+interface ArtistSearchResult {
+  list: LX.Music.MusicInfo[]
+}
+
+/**
+ * 搜索并播放当前歌手的所有歌曲
+ * @param singer 歌手名称
+ * @param source 音乐源
+ */
+export const playArtist = async(singer: string, source: LX.OnlineSource) => {
+  if (!singer || !source) return
+  setAllStatus(window.i18n.t('player__searching_artist_songs'))
+  try {
+    const result = await music[source]?.musicSearch.search(singer, 1, 100) as ArtistSearchResult | undefined
+    if (!result?.list?.length) {
+      setAllStatus(window.i18n.t('player__artist_no_result'))
+      return
+    }
+    const list = deduplicationList(result.list.map(s => markRaw(toNewMusicInfo(s)))) as LX.Music.MusicInfoOnline[]
+    if (!list.length) {
+      setAllStatus(window.i18n.t('player__artist_no_result'))
+      return
+    }
+    await setTempList(`${source}_${singer}`, list)
+    corePlayList(LIST_IDS.TEMP, 0)
+  } catch (error) {
+    console.error('playArtist error:', error)
+    setAllStatus(window.i18n.t('player__artist_search_failed'))
+  }
 }

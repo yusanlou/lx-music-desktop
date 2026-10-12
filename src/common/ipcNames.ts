@@ -131,6 +131,9 @@ const modules = {
     get_music_url_count: 'get_music_url_count',
 
     open_api_action: 'open_api_action',
+    mcp_action: 'mcp_action',
+    mcp_invoke: 'mcp_invoke',
+    mcp_response: 'mcp_response',
     sync_action: 'sync_action',
     sync_get_server_devices: 'sync_get_server_devices',
     sync_remove_server_device: 'sync_remove_server_device',

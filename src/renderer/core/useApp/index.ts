@@ -5,6 +5,7 @@ import { appSetting } from '@renderer/store/setting'
 
 import useSync from './useSync'
 import useOpenAPI from './useOpenAPI'
+import useMcp from './useMcp'
 import useStatusbarLyric from './useStatusbarLyric'
 import useUpdate from './useUpdate'
 import useDataInit from './useDataInit'
@@ -28,6 +29,7 @@ export default () => {
   const router = useRouter()
   const initSyncService = useSync()
   const initOpenAPI = useOpenAPI()
+  const initMcp = useMcp()
   const initStatusbarLyric = useStatusbarLyric()
   useEventListener()
   const initPlayer = usePlayer()
@@ -67,6 +69,7 @@ export default () => {
       void initDeeplink(envParams)
       void initSyncService()
       void initOpenAPI()
+      void initMcp()
       void initStatusbarLyric()
       sendInited()
 

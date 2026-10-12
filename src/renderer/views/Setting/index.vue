@@ -61,6 +61,7 @@ import SettingList from './components/SettingList.vue'
 import SettingDownload from './components/SettingDownload.vue'
 import SettingSync from './components/SettingSync/index.vue'
 import SettingOpenAPI from './components/SettingOpenAPI.vue'
+import SettingMcp from './components/SettingMcp.vue'
 import SettingHotKey from './components/SettingHotKey.vue'
 import SettingNetwork from './components/SettingNetwork.vue'
 import SettingOdc from './components/SettingOdc.vue'
@@ -81,6 +82,7 @@ export default {
     SettingDownload,
     SettingSync,
     SettingOpenAPI,
+    SettingMcp,
     SettingHotKey,
     SettingNetwork,
     SettingOdc,
@@ -107,6 +109,7 @@ export default {
         { id: 'SettingHotKey', title: t('setting__hot_key') },
         { id: 'SettingSync', title: t('setting__sync') },
         { id: 'SettingOpenAPI', title: t('setting__open_api') },
+        { id: 'SettingMcp', title: t('setting__mcp') },
         { id: 'SettingNetwork', title: t('setting__network') },
         { id: 'SettingOdc', title: t('setting__odc') },
         { id: 'SettingBackup', title: t('setting__backup') },

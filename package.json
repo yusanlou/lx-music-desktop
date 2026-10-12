@@ -166,6 +166,7 @@
     "webpack-merge": "^6.0.1"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@simonwep/pickr": "1.9.1",
     "better-sqlite3": "^13.0.3",
     "bufferutil": "^4.1.0",
@@ -187,7 +188,8 @@
     "utf-8-validate": "^6.0.6",
     "vue": "~3.3.13",
     "vue-router": "~4.5.1",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "zod": "^3.25.76"
   },
   "overrides": {
     "got": "^11",

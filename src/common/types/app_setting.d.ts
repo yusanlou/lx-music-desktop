@@ -682,6 +682,21 @@ declare global {
       'openAPI.bindLan': boolean
 
       /**
+       * 是否启用 MCP 服务
+       */
+      'mcp.enable': boolean
+
+      /**
+       * MCP 服务端口号
+       */
+      'mcp.port': '23331' | string
+
+      /**
+       * MCP 服务是否绑定到局域网
+       */
+      'mcp.bindLan': boolean
+
+      /**
        * 是否在离开搜索界面时自动清空搜索框
        */
       'odc.isAutoClearSearchInput': boolean
