@@ -40,7 +40,7 @@ class LauncherTest(unittest.TestCase):
         self.old = {'pid': 1, 'started_at': 100}
         self.owned = {'pid': 2, 'started_at': 200}
 
-    def execute(self, records, *, controller_result=0, agent_interrupt=False, player_mode='full'):
+    def execute(self, records, *, controller_result=0, agent_interrupt=False, player_mode='full', verbose=False, spoken_progress=False):
         controller = Mock()
         controller.wait.return_value = controller_result
         agent = Mock()
@@ -49,7 +49,7 @@ class LauncherTest(unittest.TestCase):
             agent.wait.side_effect = KeyboardInterrupt
         with patch.object(launcher, 'read_record', side_effect=records), \
                 patch.object(launcher.subprocess, 'Popen', side_effect=[controller, agent]) as spawn:
-            result = launcher.launch(MINIAGENT, player_mode=player_mode)
+            result = launcher.launch(MINIAGENT, player_mode=player_mode, verbose=verbose, spoken_progress=spoken_progress)
         return result, spawn
 
     def test_reused_tts_is_preserved(self):
@@ -143,8 +143,45 @@ class LauncherTest(unittest.TestCase):
         with patch('builtins.input', side_effect=['bad', '2']):
             self.assertEqual(launcher.choose_player_mode(), 'mini')
 
+    def test_verbose_and_voice_choices_reach_host_without_changing_service_ownership(self):
+        with patch('builtins.input', side_effect=['y', 'y']):
+            result, spawn = self.execute([self.old, self.old, self.old], verbose='ask', spoken_progress='ask')
+        self.assertEqual(result, 0)
+        self.assertIn('--verbose', spawn.call_args.args[0])
+        self.assertIn('--spoken-progress', spawn.call_args.args[0])
+        self.assertEqual(spawn.call_args.kwargs['env']['MINIAGENT_VERBOSE'], '1')
+        self.assertEqual(spawn.call_args.kwargs['env']['MINIAGENT_SPOKEN_PROGRESS'], '1')
+        self.stop_service.assert_not_called()
+
+    def test_declining_verbose_skips_voice_question_and_disables_inherited_flags(self):
+        with patch('builtins.input', return_value='') as answer, \
+                patch.dict(launcher.os.environ, {'MINIAGENT_VERBOSE': '1', 'MINIAGENT_SPOKEN_PROGRESS': '1'}):
+            _, spawn = self.execute([self.old, self.old, self.old], verbose='ask', spoken_progress='ask')
+        answer.assert_called_once()
+        self.assertNotIn('--verbose', spawn.call_args.args[0])
+        self.assertNotIn('--spoken-progress', spawn.call_args.args[0])
+        self.assertEqual(spawn.call_args.kwargs['env']['MINIAGENT_VERBOSE'], '0')
+        self.assertEqual(spawn.call_args.kwargs['env']['MINIAGENT_SPOKEN_PROGRESS'], '0')
+
 
 class CommandLineTest(unittest.TestCase):
+    def test_explicit_logging_flags_and_noninteractive_defaults(self):
+        for flags, expected in [([], (False, False)), (['--verbose'], (True, False)),
+                                (['--spoken-progress'], (True, True)),
+                                (['--verbose', '--no-spoken-progress'], (True, False))]:
+            with self.subTest(flags=flags), patch.object(sys, 'argv', ['start-radio.py'] + flags), \
+                    patch.object(sys.stdin, 'isatty', return_value=False), \
+                    patch.object(launcher, 'launch', return_value=0) as launch:
+                self.assertEqual(launcher.main(), 0)
+                self.assertEqual(launch.call_args.args[3:5], expected)
+
+    def test_check_never_asks_for_log_or_voice_choices(self):
+        with patch.object(sys, 'argv', ['start-radio.py', '--check']), \
+                patch.object(sys.stdin, 'isatty', return_value=True), \
+                patch.object(launcher, 'launch', return_value=0) as launch:
+            launcher.main()
+        self.assertEqual(launch.call_args.args[3:5], (False, False))
+
     def test_explicit_modes_skip_menu(self):
         for flag, mode in (('--full-player', 'full'), ('--start-player', 'full'),
                            ('--mini-player', 'mini'), ('--no-player', 'existing')):

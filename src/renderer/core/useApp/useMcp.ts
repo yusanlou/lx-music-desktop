@@ -2,19 +2,23 @@ import { rendererOn, rendererSend } from '@common/rendererIpc'
 import { WIN_MAIN_RENDERER_EVENT_NAME } from '@common/ipcNames'
 import { watch, markRaw } from '@common/utils/vueTools'
 import { deduplicationList } from '@renderer/utils'
-import { search as searchMusic } from '@renderer/store/search/music/action'
+import { searchRadioMusic as searchMusic } from '@renderer/core/radio/search'
 import { playMusicInfo, playInfo, isPlay } from '@renderer/store/player/state'
-import { setTempList, addListMusics, getListMusicsFromCache } from '@renderer/store/list/action'
+import { setTempList, addListMusics, getListMusicsFromCache, removeListMusics } from '@renderer/store/list/action'
 import { tempListMeta } from '@renderer/store/list/state'
 import { playArtist } from '@renderer/store/player/action'
 import { playList as corePlayList, setMusicUrl, getNextPlayMusicInfo } from '@renderer/core/player'
 import { radioPlayback, songKey } from '@renderer/core/radio/playback'
 import { miniRadioMode } from '@renderer/core/radio/mode'
+import { selectQueuedRemoval, selectDistinctNextSong } from '@renderer/core/radio/queue'
+import { getHostSettings } from '@renderer/core/radio/hostSettings'
+import { selectRadioSong } from '@renderer/core/radio/matching'
 import type { MusicCue } from '@renderer/core/radio/playback'
 import { getCurrentTime, getDuration } from '@renderer/plugins/player'
 import { getOtherSource } from '@renderer/core/music/utils'
 import { getMusicUrl } from '@renderer/core/music'
 import { validateRadioAudio } from '@renderer/core/radio/resource'
+import { configureRadioSources } from '@renderer/core/radio/sources'
 import { setUserApi } from '@renderer/core/apiSource'
 import { LIST_IDS } from '@common/constants'
 import { appSetting } from '@renderer/store/setting'
@@ -28,6 +32,17 @@ import { mcp } from '@renderer/store'
  *
  * 新增能力时，只需在此 map 中增加一个方法即可。
  */
+const findRadioSong = async(song: { name: string, singer?: string }, source: LX.OnlineSource | 'all') => {
+  const keyword = `${song.name} ${song.singer ?? ''}`.trim()
+  let list: LX.Music.MusicInfo[] = []
+  try { list = await searchMusic(keyword, 1, source) } catch (error) {
+    if (source === 'all') throw error
+  }
+  const target = selectRadioSong(list, song)
+  if (target || source === 'all') return target
+  return selectRadioSong(await searchMusic(keyword, 1, 'all'), song)
+}
+
 const mcpMethodMap: Record<string, (params: any) => Promise<any> | any> = {
   /**
    * 搜索歌曲
@@ -85,28 +100,26 @@ const mcpMethodMap: Record<string, (params: any) => Promise<any> | any> = {
     if (opening && (opening.song.name !== songs[0].name || (opening.song.singer ?? '') !== (songs[0].singer ?? ''))) return { played: false, reason: 'opening_song_mismatch' }
     const matched: LX.Music.MusicInfoOnline[] = []
     const failed: Array<{ name: string, singer?: string }> = []
+    const searchFailures: Array<{ name: string, reason: string }> = []
     for (const song of songs) {
       if (!song?.name) continue
       const keyword = `${song.name} ${song.singer ?? ''}`.trim()
       try {
-        const list = await searchMusic(keyword, 1, source)
-        if (!list?.length) {
+        const target = await findRadioSong(song, source)
+        if (!target) {
           failed.push(song)
           continue
         }
-        // 优先选歌名+歌手都匹配的，否则取第一个结果
-        const target = list.find(m =>
-          m.name === song.name && (!song.singer || m.singer.includes(song.singer)),
-        ) ?? list[0]
         matched.push(target as LX.Music.MusicInfoOnline)
       } catch (err) {
         console.error('play_songs search error:', keyword, err)
+        searchFailures.push({ name: song.name, reason: err instanceof Error && err.message === 'radio_search_unavailable' ? err.message : 'search_request_failed' })
         failed.push(song)
       }
     }
     const musicList = deduplicationList(matched) as LX.Music.MusicInfoOnline[]
-    if (!musicList.length) return { played: false, matched: 0, failed }
-    if (opening && failed.includes(songs[0])) return { played: false, reason: 'opening_song_unavailable', failed }
+    if (!musicList.length) return { played: false, reason: searchFailures.length ? 'search_unavailable' : 'no_matching_song', stage: 'song_search', matched: 0, failed, searchFailures }
+    if (opening && failed.includes(songs[0])) return { played: false, reason: 'no_matching_song', stage: 'song_search', failed }
     if (capturedSession !== radioPlayback.sessionId || capturedPosition !== radioPlayback.positionId) return { played: false, reason: 'stale' }
     if (opening && radioPlayback.enabled) {
       try {
@@ -114,11 +127,19 @@ const mcpMethodMap: Record<string, (params: any) => Promise<any> | any> = {
           musicInfo: musicList[0],
           validateUrl: async url => {
             if (capturedSession !== radioPlayback.sessionId || capturedPosition !== radioPlayback.positionId) throw new DOMException('Radio queue changed', 'AbortError')
-            await validateRadioAudio(url)
+            await validateRadioAudio(url, undefined, undefined, musicList[0].interval)
           },
         })
       } catch (err: any) {
-        return { played: false, reason: err.name === 'AbortError' ? 'stale' : 'opening_song_unavailable', failed: [songs[0]] }
+        const audioReason = typeof err.reason === 'string' && ['short_audio', 'incomplete_audio', 'unavailable'].includes(err.reason)
+          ? err.reason : /\b(radio_sources_[a-z_]+|radio_audio_identity_[a-z_]+)\b/.exec(err.message ?? '')?.[1] ?? 'audio_unavailable'
+        return {
+          played: false,
+          reason: err.name === 'AbortError' ? 'stale' : 'opening_song_unavailable',
+          stage: 'audio_validation',
+          audioFailure: { source: musicList[0].source, reason: audioReason },
+          failed: [songs[0]],
+        }
       }
       if (capturedSession !== radioPlayback.sessionId || capturedPosition !== radioPlayback.positionId) return { played: false, reason: 'stale' }
     }
@@ -164,14 +185,11 @@ const mcpMethodMap: Record<string, (params: any) => Promise<any> | any> = {
       if (!song?.name) continue
       const keyword = `${song.name} ${song.singer ?? ''}`.trim()
       try {
-        const list = await searchMusic(keyword, 1, source)
-        if (!list?.length) {
+        const target = await findRadioSong(song, source)
+        if (!target) {
           failed.push(song)
           continue
         }
-        const target = list.find(m =>
-          m.name === song.name && (!song.singer || m.singer.includes(song.singer)),
-        ) ?? list[0]
         const key = `${target.name}__${target.singer}`
         if (existingKeys.has(key)) {
           skipped.push(song)
@@ -230,17 +248,37 @@ const mcpMethodMap: Record<string, (params: any) => Promise<any> | any> = {
     }
   },
 
-  set_radio_mode({ enabled, voiceGain = 1.6, interjectionMusicGain = 1.1, interjectionVoiceGain = 0.9 }: {
+  async set_radio_mode({ enabled, voiceGain = 1.6, interjectionMusicGain = 1.1, interjectionVoiceGain = 0.9 }: {
     enabled: boolean
     voiceGain?: number
     interjectionMusicGain?: number
     interjectionVoiceGain?: number
   }) {
     radioPlayback.configure(enabled, voiceGain, interjectionMusicGain, interjectionVoiceGain)
+    if (enabled) await getHostSettings().catch(() => {})
+    await configureRadioSources(enabled)
     return radioPlayback.status()
   },
 
   get_radio_state: getRadioState,
+
+  async announce_radio_progress({ text, audioBase64 }: { text: string, audioBase64: string }) {
+    return await radioPlayback.announceProgress(text, `data:audio/mpeg;base64,${audioBase64}`)
+  },
+
+  async remove_radio_song(params: { sessionId: number, anchor: string, songId: string, source: string }) {
+    const state = await getRadioState()
+    const selected = selectQueuedRemoval(state, params)
+    if (!selected.allowed) return { removed: false, reason: selected.reason }
+    const current = playMusicInfo.musicInfo ? serializeRadioSong(playMusicInfo.musicInfo) : null
+    if (!current || radioPlayback.sessionId !== params.sessionId ||
+        `${radioPlayback.positionId}:${songKey(current)}` !== params.anchor || playMusicInfo.listId !== LIST_IDS.TEMP) {
+      return { removed: false, reason: 'stale' }
+    }
+    await removeListMusics({ listId: LIST_IDS.TEMP, ids: [selected.id] })
+    radioPlayback.forgetPrepared(songKey({ id: params.songId, source: params.source }))
+    return { removed: true, songId: params.songId, source: params.source }
+  },
 
   async plan_radio_interjection({
     sessionId, anchor, songId, source, atSeconds, text = '', audioBase64, reason = '',
@@ -392,7 +430,7 @@ async function getRadioState() {
     duration: unchanged && Number.isFinite(getDuration()) ? getDuration() : 0,
     current,
     anchor: current ? `${playback.positionId}:${songKey(current)}` : '',
-    next: unchanged && next && next.listId === LIST_IDS.TEMP && !next.isTempPlay ? serializeRadioSong(next.musicInfo) : null,
+    next: selectDistinctNextSong(current, unchanged && next && next.listId === LIST_IDS.TEMP && !next.isTempPlay ? serializeRadioSong(next.musicInfo) : null),
     total: songs.length,
     remaining,
     needRefill: active && songs.length > 0 && remaining <= 3,
@@ -439,7 +477,10 @@ export default () => {
 
   // 监听设置开关，启停 MCP 服务
   const handleEnable = async(enable: boolean, port: string, bindLan: boolean) => {
-    if (!enable) radioPlayback.configure(false)
+    if (!enable) {
+      radioPlayback.configure(false)
+      await configureRadioSources(false)
+    }
     await sendMcpAction({
       action: 'enable',
       data: { enable, port, bindLan },

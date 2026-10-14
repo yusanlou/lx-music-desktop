@@ -1,9 +1,9 @@
 <template>
-  <main class="mini-radio-shell" aria-label="迷你电台">
+  <main class="mini-radio-shell" aria-label="迷你电台" ignore-tip>
     <header class="radio-header">
       <span class="radio-brand">私人电台<span>RADIO</span></span>
       <div class="radio-window-controls">
-        <button type="button" title="设置" aria-label="打开设置" @click="$emit('settings')">⚙</button>
+        <button type="button" title="设置" aria-label="打开主持人设置" @click="hostSettingsOpen = true">⚙</button>
         <button type="button" title="最小化" aria-label="最小化" @click="minWindow">−</button>
         <button type="button" title="关闭电台播放器" aria-label="关闭电台播放器" @click="quitApp">×</button>
       </div>
@@ -19,16 +19,6 @@
       <div class="radio-time"><span>{{ playProgress.nowPlayTimeStr }}</span><span>播放进度</span><span>{{ playProgress.maxPlayTimeStr }}</span></div>
     </section>
 
-    <div class="radio-play-controls">
-      <button class="radio-play" type="button" :disabled="!musicInfo.id" :aria-label="isPlay ? '暂停' : '播放'" @click="togglePlay">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path v-if="isPlay" d="M7 5h4v14H7zM14 5h4v14h-4z" /><path v-else d="m8 4 13 8-13 8z" /></svg>
-        {{ isPlay ? '暂停' : '播放' }}
-      </button>
-      <button class="radio-next" type="button" :disabled="!musicInfo.id" aria-label="下一首" @click="nextSong">
-        下一首<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 5 10 7-10 7zM17 5h3v14h-3z" /></svg>
-      </button>
-    </div>
-
     <div class="radio-volume">
       <button type="button" :aria-label="isMute ? '取消静音' : '静音'" @click="setMute(!isMute)">{{ isMute ? '静音中' : '音量' }}</button>
       <input type="range" aria-label="音量" min="0" max="100" step="1" :value="Math.round(volume * 100)" @input="changeVolume">
@@ -39,22 +29,25 @@
       <div class="radio-host-heading"><span class="radio-lamp" :class="{ active: host.phase === 'speaking' }" /><span>{{ hostLabel }}</span></div>
       <p :title="host.introduction || helperText">{{ host.introduction || helperText }}</p>
     </section>
-    <footer class="radio-footer"><span>留一点时间给音乐</span><span v-if="status === 'error'" role="alert">播放失败，请试试下一首</span><span v-else>{{ host.enabled ? '主持人在线' : '等待主持人上线' }}</span></footer>
+    <footer class="radio-footer"><span>留一点时间给音乐</span><span v-if="status === 'error'" role="alert">音源暂时不可用</span><span v-else>{{ host.enabled ? '主持人在线' : '等待主持人上线' }}</span></footer>
+    <HostSettings v-if="hostSettingsOpen" @close="hostSettingsOpen = false" @player-settings="$emit('settings')" />
   </main>
 </template>
 
 <script setup>
+import HostSettings from './HostSettings.vue'
+import { getHostSettings } from '@renderer/core/radio/hostSettings'
 import { computed, onBeforeUnmount, ref } from '@common/utils/vueTools'
 import { musicInfo, isPlay, status } from '@renderer/store/player/state'
 import { playProgress } from '@renderer/store/player/playProgress'
 import { volume, isMute, setMute, setVolume } from '@renderer/store/player/volume'
-import { togglePlay, playNext } from '@renderer/core/player'
 import { minWindow, quitApp } from '@renderer/utils/ipc'
 import { radioPlayback } from '@renderer/core/radio/playback'
 
 defineEmits(['settings'])
+const hostSettingsOpen = ref(false)
+void getHostSettings().catch(() => {})
 const host = ref(radioPlayback.status())
-const errorText = ref('')
 const timer = setInterval(() => { host.value = radioPlayback.status() }, 250)
 onBeforeUnmount(() => { clearInterval(timer) })
 const progress = computed(() => Math.max(0, Math.min(1, playProgress.progress)))
@@ -67,7 +60,6 @@ const hostLabel = computed(() => {
   return isPlay.value ? '音乐时间' : '电台已暂停'
 })
 const helperText = computed(() => {
-  if (errorText.value) return errorText.value
   if (!host.value.enabled) return '打开电台启动脚本，让主持人陪你听歌。'
   if (host.value.preparedKeys.length) return '下一首的介绍已经准备好了。'
   if (host.value.scheduledInterjection) return '稍后，主持人会和你聊两句。'
@@ -75,10 +67,6 @@ const helperText = computed(() => {
 })
 const changeVolume = (event) => {
   setVolume(Number(event.target.value) / 100)
-}
-const nextSong = () => {
-  errorText.value = ''
-  void playNext().catch(() => { errorText.value = '暂时没能切换歌曲，请稍后再试。' })
 }
 </script>
 
@@ -90,6 +78,7 @@ const nextSong = () => {
   --radio-amber: #c48c3c;
   --radio-key: #e7e8df;
   --radio-ink: #192c34;
+  position: relative;
   box-sizing: border-box;
   width: 100%;
   height: 100%;
@@ -120,12 +109,6 @@ const nextSong = () => {
 .radio-needle { position: absolute; top: -3px; height: 25px; width: 2px; background: var(--radio-ink); transform: translateX(-1px); }
 .radio-time { display: flex; justify-content: space-between; font: 10px Menlo, monospace; }
 .radio-time span:nth-child(2) { font-family: 'PingFang SC', sans-serif; opacity: .6; }
-.radio-play-controls { display: flex; gap: 10px; height: 44px; flex-shrink: 0; }
-.radio-play-controls button { display: flex; justify-content: center; align-items: center; gap: 10px; border: 1px solid #192c34; border-radius: 5px; font-size: 13px; box-shadow: 0 3px 0 #192c34; }
-.radio-play-controls button:active:not(:disabled) { transform: translateY(2px); box-shadow: 0 1px 0 #192c34; }
-.radio-play-controls svg { width: 18px; height: 18px; fill: currentColor; }
-.radio-play { flex: 1.4; background: var(--radio-key); color: var(--radio-ink) !important; }
-.radio-next { flex: 1; background: #ffffff0a; color: var(--radio-trim); }
 .radio-volume { display: flex; align-items: center; gap: 12px; height: 20px; flex-shrink: 0; }
 .radio-volume button { padding: 0; min-width: 40px; text-align: left; font-size: 11px; border: 0; background: none; }
 .radio-volume input { min-width: 0; flex: 1; accent-color: var(--radio-trim); height: 3px; cursor: pointer; }

@@ -5,6 +5,8 @@ module.exports = {
   target: 'electron-main',
   output: {
     filename: '[name].js',
+    // Main-process CommonJS chunks must never share renderer chunk filenames.
+    chunkFilename: 'main-[id].[contenthash:8].js',
     library: {
       type: 'commonjs2',
     },

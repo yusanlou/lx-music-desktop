@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { getAddress } from '@common/utils/nodejs'
 import { sendEvent, sendTaskbarButtonClick } from '@main/modules/winMain'
 import { getApiList, importApi, removeApi } from '@main/modules/userApi'
+import { getRadioSourcesStatus } from '@main/modules/radioSources'
 import { mainOn, mainOffAll } from '@common/mainIpc'
 import { WIN_MAIN_RENDERER_EVENT_NAME } from '@common/ipcNames'
 import { LIST_IDS } from '@common/constants'
@@ -218,6 +219,7 @@ const createMcpServer = (): McpServer => {
     // Allow first-song media checks and fallback sources in addition to searches.
     const timeout = (opening ? 90000 : 30000) + (songs?.length ?? 0) * 6000
     const result = await invokeRenderer('play_songs', { songs, source: source ?? 'all', opening }, timeout)
+    if (result.audioFailure) result.audioFailure.resolution = getRadioSourcesStatus().lastResolution
     return textResult(result)
   })
   server.registerTool('append_songs', {
@@ -273,6 +275,25 @@ const createMcpServer = (): McpServer => {
   server.registerTool('get_radio_state', {
     description: '获取电台会话、实际下一首歌曲、已准备解说和队列剩余情况',
   }, async() => textResult(await invokeRenderer('get_radio_state')))
+  server.registerTool('announce_radio_progress', {
+    description: '可选的关键进度短语音：最长6秒、每分钟最多一次，正式主持优先，不占插播次数、不切歌。',
+    inputSchema: {
+      text: z.string().min(1).max(40),
+      audioBase64: z.string().min(1).max(1024 * 1024).regex(/^[A-Za-z0-9+/]*={0,2}$/),
+    },
+  }, async params => textResult(await invokeRenderer('announce_radio_progress', params, 7000)))
+  server.registerTool('remove_radio_song', {
+    description: '纠正电台选曲：从临时队列移除一首尚未播放的歌，保留当前播放。校验会话和播放位置，过期请求拒绝。',
+    inputSchema: {
+      sessionId: z.number().int(),
+      anchor: z.string(),
+      songId: z.string(),
+      source: z.string(),
+    },
+  }, async params => textResult(await invokeRenderer('remove_radio_song', params)))
+  server.registerTool('get_radio_sources_status', {
+    description: '诊断电台后台音源池、最近更新与巡检时间，不改变播放或弹出提示',
+  }, async() => textResult(getRadioSourcesStatus()))
   server.registerTool('prepare_radio_intro', {
     description: '缓存下一首的解说与 MP3；仅在会话和当前歌曲仍匹配时接受，歌曲切换时自动播报',
     inputSchema: {

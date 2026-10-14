@@ -23,6 +23,7 @@ import { LIST_IDS } from '@common/constants'
 import { addDislikeInfo } from '@renderer/core/dislikeList'
 import { radioPlayback, songKey } from '@renderer/core/radio/playback'
 import { validateRadioAudio } from '@renderer/core/radio/resource'
+import { isSameRadioRecording } from '@renderer/core/radio/matching'
 import { volume, isMute } from '@renderer/store/player/volume'
 // import { checkMusicFileAvailable } from '@renderer/utils/music'
 
@@ -108,6 +109,7 @@ const getMusicPlayUrl = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListIt
 
   // const type = getPlayType(appSetting['player.highQuality'], musicInfo)
   let toggleMusicInfo = ('progress' in musicInfo ? musicInfo.metadata.musicInfo : musicInfo).meta.toggleMusicInfo
+  if (validateUrl && toggleMusicInfo && !isSameRadioRecording(toggleMusicInfo, 'progress' in musicInfo ? musicInfo.metadata.musicInfo : musicInfo)) toggleMusicInfo = null
 
   return (toggleMusicInfo ? getMusicUrl({
     musicInfo: toggleMusicInfo,
@@ -160,7 +162,7 @@ export const setMusicUrl = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem
   const positionId = radioPlayback.positionId
   const validateUrl = radio ? async(url: string) => {
     if ((radioPlayback.enabled && radioPlayback.sessionId !== sessionId) || radioPlayback.positionId !== positionId) request.abort()
-    await validateRadioAudio(url, request.signal)
+    await validateRadioAudio(url, request.signal, undefined, 'progress' in musicInfo ? musicInfo.metadata.musicInfo.interval : musicInfo.interval)
   } : undefined
   gettingUrlId = createGettingUrlId(musicInfo)
   void getMusicPlayUrl(musicInfo, isRefresh, false, validateUrl).then((url) => {

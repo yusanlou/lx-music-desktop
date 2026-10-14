@@ -1,16 +1,16 @@
+import { getRadioAudioMinimum, MIN_RADIO_AUDIO_SECONDS, RADIO_ENCODER_PADDING_SECONDS } from '@common/radioAudio'
+export { MIN_RADIO_AUDIO_SECONDS } from '@common/radioAudio'
+
 /** Validate music media silently; never apply this limit to the host's speech. */
-export const MIN_RADIO_AUDIO_SECONDS = 30
-// MP3/AAC encoder padding can put a 30-second preview just above 30 seconds.
-const ENCODER_PADDING_SECONDS = 0.25
 
 export class RadioAudioError extends Error {
-  constructor(readonly reason: 'short_audio' | 'unavailable', readonly duration?: number) {
-    super(reason === 'short_audio' ? `电台音频仅 ${duration!.toFixed(2)} 秒，疑似试听或占位音频` : '电台音频无法确认有效时长')
+  constructor(readonly reason: 'short_audio' | 'incomplete_audio' | 'unavailable', readonly duration?: number) {
+    super(reason === 'incomplete_audio' ? `电台音频仅 ${duration!.toFixed(2)} 秒，疑似不完整试听片段` : reason === 'short_audio' ? `电台音频仅 ${duration!.toFixed(2)} 秒，疑似试听或占位音频` : '电台音频无法确认有效时长')
   }
 }
 
 export const validateRadioAudio = async(url: string, signal?: AbortSignal,
-  createAudio: () => HTMLAudioElement = () => new Audio()): Promise<void> => {
+  createAudio: () => HTMLAudioElement = () => new Audio(), expectedInterval?: string | null): Promise<void> => {
   if (signal?.aborted) throw new DOMException('Radio audio probe cancelled', 'AbortError')
   const audio = createAudio()
   await new Promise<void>((resolve, reject) => {
@@ -29,15 +29,16 @@ export const validateRadioAudio = async(url: string, signal?: AbortSignal,
     }
     const check = () => {
       if (!Number.isFinite(audio.duration) || audio.duration <= 0) return
-      finish(audio.duration <= MIN_RADIO_AUDIO_SECONDS + ENCODER_PADDING_SECONDS
-        ? new RadioAudioError('short_audio', audio.duration) : undefined)
+      finish(audio.duration <= MIN_RADIO_AUDIO_SECONDS + RADIO_ENCODER_PADDING_SECONDS
+        ? new RadioAudioError('short_audio', audio.duration) : audio.duration < getRadioAudioMinimum(expectedInterval)
+          ? new RadioAudioError('incomplete_audio', audio.duration) : undefined)
     }
     const abort = () => { finish(new DOMException('Radio audio probe cancelled', 'AbortError')) }
     const timer = setTimeout(() => { finish(new RadioAudioError('unavailable')) }, 8000)
     audio.autoplay = false
     audio.muted = true
     audio.volume = 0
-    audio.crossOrigin = 'anonymous'
+    // Metadata-only media loads do not require the CDN to opt into CORS.
     audio.preload = 'metadata'
     audio.onloadedmetadata = audio.ondurationchange = audio.oncanplay = check
     audio.onerror = () => { finish(new RadioAudioError('unavailable')) }

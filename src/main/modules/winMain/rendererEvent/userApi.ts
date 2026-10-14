@@ -11,8 +11,23 @@ import {
   setAllowShowUpdateAlert,
 } from '@main/modules/userApi'
 import { sendEvent } from '@main/modules/winMain/main'
+import { configureRadioSources, resolveRadioSource, getRadioSourcesStatus, observeRadioSourceRequest } from '@main/modules/radioSources'
+import { radioHostSettings } from '@main/modules/radioHost'
+import { type RadioSourceRequest, type RadioSourceResult } from '@main/modules/radioSources/pool'
+import { validateRadioAudioIdentity } from '@main/modules/radioSources/identity'
 
 export default () => {
+  mainHandle(WIN_MAIN_RENDERER_EVENT_NAME.radio_host_settings_get, async() => radioHostSettings())
+  mainHandle<Record<string, unknown>>(WIN_MAIN_RENDERER_EVENT_NAME.radio_host_settings_save, async({ params }) => radioHostSettings(params))
+  mainHandle<boolean>(WIN_MAIN_RENDERER_EVENT_NAME.radio_sources_configure, async({ params }) => { await configureRadioSources(params) })
+  mainHandle<{ request: RadioSourceRequest, refresh: boolean, failedUrl?: string, timeoutMs?: number }, RadioSourceResult>(WIN_MAIN_RENDERER_EVENT_NAME.radio_sources_resolve, async({ params }) => {
+    return resolveRadioSource(params.request, params.refresh, params.failedUrl, params.timeoutMs)
+  })
+  mainHandle(WIN_MAIN_RENDERER_EVENT_NAME.radio_sources_status, async() => getRadioSourcesStatus())
+  mainHandle<RadioSourceRequest>(WIN_MAIN_RENDERER_EVENT_NAME.radio_sources_observe, async({ params }) => observeRadioSourceRequest(params))
+  mainHandle<{ url: string, song: { name: string, singer?: string } }>(WIN_MAIN_RENDERER_EVENT_NAME.radio_audio_identity, async({ params }) => {
+    await validateRadioAudioIdentity(params.url, params.song)
+  })
   mainHandle<string, LX.UserApi.ImportUserApi>(WIN_MAIN_RENDERER_EVENT_NAME.import_user_api, async({ params: script }) => {
     return importApi(script)
   })

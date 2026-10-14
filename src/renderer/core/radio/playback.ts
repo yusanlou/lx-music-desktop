@@ -18,7 +18,7 @@ interface Speech {
   key: string
   text: string
   audio: HTMLAudioElement | null
-  kind: 'intro' | 'interjection'
+  kind: 'intro' | 'interjection' | 'progress'
   cueFraction: number
   plan?: InterjectionPlan
   started: boolean
@@ -40,6 +40,7 @@ export class RadioPlayback {
   private interjectionCount = 0
   private lastInterjectionProgress: number | null = null
   private songProgress = 0
+  private songDuration = 0
   private readonly recentSpeech: Array<{ kind: string, key: string, text: string }> = []
   private interjectionRequest = 0
   private continueSong: (() => void) | null = null
@@ -50,10 +51,15 @@ export class RadioPlayback {
   private voiceGain = 1
   private interjectionMusicGain = 1
   private interjectionVoiceGain = 1
+  private regularInterjections = 1
+  private longInterjections = 2
+  private longSongSeconds = 240
+  private minGapSeconds = 45
   private voiceMuted = false
   private gainHandler: ((gain: number) => void) | null = null
   private fadeTimer: ReturnType<typeof setInterval> | null = null
   private fadeTickAt = 0
+  private lastProgressSpeechAt = -Infinity
 
   constructor(private readonly createAudio: (url: string) => HTMLAudioElement, private readonly now: () => number = () => performance.now()) {}
 
@@ -76,6 +82,33 @@ export class RadioPlayback {
     this.lastInterjectionProgress = null
     if (!enabled && !wasPaused) continueSong?.()
     return this.sessionId
+  }
+
+  /** Apply controls without cancelling speech, prefetch, the queue or its anchor. */
+  updateSettings(settings: Record<string, any>) {
+    const number = (key: string, low: number, high: number, apply: (value: number) => void) => {
+      const value = settings[key]
+      if (typeof value === 'number' && Number.isFinite(value) && value >= low && value <= high) apply(value)
+    }
+    number('speech.voice_gain', 0.5, 3, value => { this.voiceGain = value })
+    number('radio.interjection_voice_gain', 0.5, 1, value => { this.interjectionVoiceGain = value })
+    number('radio.interjection_music_gain', 0.5, 2, value => { this.interjectionMusicGain = value })
+    number('host.regular_interjections', 0, 4, value => { this.regularInterjections = Math.floor(value) })
+    number('host.long_interjections', 0, 6, value => { this.longInterjections = Math.floor(value) })
+    number('host.long_song_seconds', 120, 600, value => { this.longSongSeconds = value })
+    number('host.min_gap_seconds', 15, 120, value => { this.minGapSeconds = value })
+    const limit = this.songDuration >= this.longSongSeconds ? this.longInterjections : this.regularInterjections
+    if (this.pendingInterjection && (this.interjectionCount >= limit ||
+      (this.lastInterjectionProgress !== null && this.pendingInterjection.plan!.atSeconds < this.lastInterjectionProgress + this.minGapSeconds))) {
+      this.dispose(this.pendingInterjection)
+      this.pendingInterjection = null
+      this.interjectionDecided = limit === 0
+      this.interjectionResult = ''
+    }
+    for (const speech of this.prepared.values()) this.applyVoiceVolume(speech)
+    if (this.active) this.applyVoiceVolume(this.active)
+    if (this.pendingInterjection) this.applyVoiceVolume(this.pendingInterjection)
+    if (this.active?.kind === 'interjection' && this.active.started) this.fadeTo(Math.min(0.5, this.active.plan!.volume * this.interjectionMusicGain), 0.3)
   }
 
   status() {
@@ -130,9 +163,58 @@ export class RadioPlayback {
     return true
   }
 
+  forgetPrepared(key: string) {
+    const speech = this.prepared.get(key)
+    if (speech) this.dispose(speech)
+    this.prepared.delete(key)
+  }
+
+  /** Optional diagnostic voice, separate from programme cues and their quotas. */
+  async announceProgress(text: string, audioUrl: string) {
+    const available = () => this.enabled && !this.paused && !this.active && !this.fadeTimer &&
+      (!this.pendingInterjection?.plan || this.pendingInterjection.plan.atSeconds - this.songProgress > 8)
+    if (!available() || this.now() - this.lastProgressSpeechAt < 60000) return { played: false, reason: 'busy_or_cooldown' }
+    if (!text.trim() || text.length > 40) return { played: false, reason: 'invalid_text' }
+    const sessionId = this.sessionId
+    const positionId = this.positionId
+    const speech: Speech = {
+      key: 'progress',
+      text,
+      audio: this.createAudio(audioUrl),
+      kind: 'progress',
+      cueFraction: 0,
+      started: false,
+      plan: { atSeconds: 0, volume: 0.3, fadeDownSeconds: 0.2, restoreSeconds: 0.4 },
+    }
+    if (!await this.load(speech)) return { played: false, reason: 'audio_not_ready' }
+    if (!available() || sessionId !== this.sessionId || positionId !== this.positionId ||
+      !Number.isFinite(speech.audio!.duration) || speech.audio!.duration <= 0 || speech.audio!.duration > 6) {
+      this.dispose(speech)
+      return { played: false, reason: 'stale_or_too_long' }
+    }
+    this.lastProgressSpeechAt = this.now()
+    this.active = speech
+    this.bindCompletion(speech)
+    this.fadeTo(0.3, 0.2, () => {
+      if (this.active === speech && !this.paused) this.startVoice(speech)
+    })
+    return { played: true, audioSeconds: speech.audio!.duration }
+  }
+
+  private cancelProgressSpeech() {
+    if (this.active?.kind !== 'progress') return
+    const speech = this.active
+    this.active = null
+    this.clearTimer()
+    this.clearFade()
+    this.dispose(speech)
+    this.setGain(1)
+  }
+
   async planInterjection(sessionId: number, key: string, text: string, audioUrl: string | undefined,
     plan: InterjectionPlan | null, isValid: () => boolean, clock: () => { progress: number, duration: number }, reason = '') {
     if (!this.enabled || sessionId !== this.sessionId || !isValid()) return { prepared: false, reason: 'stale' }
+    this.cancelProgressSpeech()
     if (this.active?.kind === 'interjection') return { prepared: false, reason: 'already_speaking' }
     const request = ++this.interjectionRequest
     if (!plan) {
@@ -156,7 +238,7 @@ export class RadioPlayback {
     const speechDuration = speech.audio.duration
     if (!Number.isFinite(duration) || !Number.isFinite(speechDuration) || speechDuration <= 0 ||
       plan.atSeconds - plan.fadeDownSeconds <= progress + 0.5 || plan.atSeconds + speechDuration + plan.restoreSeconds > duration - 0.5 ||
-      (this.lastInterjectionProgress !== null && plan.atSeconds < this.lastInterjectionProgress + 45) || this.interjectionCount >= 2) {
+      (this.lastInterjectionProgress !== null && plan.atSeconds < this.lastInterjectionProgress + this.minGapSeconds) || this.interjectionCount >= (duration >= this.longSongSeconds ? this.longInterjections : this.regularInterjections)) {
       this.dispose(speech)
       return { prepared: false, reason: 'late_or_does_not_fit' }
     }
@@ -171,8 +253,10 @@ export class RadioPlayback {
   /** Driven by actual music progress, not time elapsed since preparation. */
   updateSong(progress: number, duration: number, playing: boolean) {
     this.songProgress = progress
+    this.songDuration = duration
     if (playing && Number.isFinite(duration) && duration > 0) this.musicStarted = true
     const pending = this.pendingInterjection
+    if (pending?.plan && progress >= pending.plan.atSeconds - pending.plan.fadeDownSeconds - 0.5) this.cancelProgressSpeech()
     if (!this.enabled || !pending?.plan || !playing || this.paused || this.active !== null || this.fadeTimer !== null) return
     const plan = pending.plan
     if (progress > plan.atSeconds + 0.75 || plan.atSeconds + (pending.audio?.duration ?? 0) + plan.restoreSeconds > duration - 0.5) {
@@ -228,6 +312,7 @@ export class RadioPlayback {
   }
 
   pause(): boolean {
+    this.cancelProgressSpeech()
     this.paused = true
     if (!this.active && !this.fadeTimer) return false
     this.active?.audio?.pause()
@@ -298,7 +383,7 @@ export class RadioPlayback {
   }
 
   private startVoice(speech: Speech) {
-    if (!speech.started) {
+    if (!speech.started && speech.kind !== 'progress') {
       this.recentSpeech.push({ kind: speech.kind, key: speech.key, text: speech.text })
       if (this.recentSpeech.length > 8) this.recentSpeech.shift()
     }
@@ -333,7 +418,8 @@ export class RadioPlayback {
         this.lastInterjectionProgress = this.songProgress
       }
       this.fadeTo(1, speech.plan!.restoreSeconds)
-    } else if (!this.musicStarted) this.startMusic()
+    } else if (speech.kind === 'progress') this.fadeTo(1, speech.plan!.restoreSeconds)
+    else if (!this.musicStarted) this.startMusic()
   }
 
   private startMusic() {
@@ -397,7 +483,7 @@ export class RadioPlayback {
 
   private armTimeout(speech: Speech) {
     this.clearTimer()
-    this.timer = setTimeout(() => { this.finish(speech, true) }, 90000)
+    this.timer = setTimeout(() => { this.finish(speech, true) }, speech.kind === 'progress' ? 6500 : 90000)
   }
 
   private clearTimer() {

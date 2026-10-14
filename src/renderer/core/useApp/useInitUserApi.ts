@@ -6,7 +6,8 @@ import { qualityList, userApi } from '@renderer/store'
 import { appSetting } from '@renderer/store/setting'
 import { dialog } from '@renderer/plugins/Dialog'
 import { setUserApi } from '@renderer/core/apiSource'
-import { miniRadioMode } from '@renderer/core/radio/mode'
+import { miniRadioMode, isRadioStartup } from '@renderer/core/radio/mode'
+import { radioSourcesEnabled } from '@renderer/core/radio/sources'
 
 const sendUserApiRequest: typeof sendUserApiRequestRemote = async(data) => {
   let stop: () => void
@@ -132,7 +133,7 @@ export default () => {
         userApi.apis = apis
       }
     } else {
-      if (message) {
+      if (message && !isRadioStartup && !radioSourcesEnabled.value) {
         void dialog({
           message: `${t('user_api__init_failed_alert', { name: apiInfo.name })}\n${message}`,
           selection: true,
@@ -145,7 +146,7 @@ export default () => {
 
   const rUserApiShowUpdateAlert = onShowUserApiUpdateAlert(({ params: { name, log, updateUrl } }) => {
     // Keep listening controls available; source maintenance lives in settings.
-    if (miniRadioMode.value) return
+    if (miniRadioMode.value || isRadioStartup || radioSourcesEnabled.value) return
     if (updateUrl) {
       void dialog({
         message: `${t('user_api__update_alert', { name })}\n${log}`,

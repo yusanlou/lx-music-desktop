@@ -2,8 +2,16 @@ import { contextBridge, ipcRenderer, webFrame } from 'electron'
 import needle from 'needle'
 import zlib from 'zlib'
 import { createCipheriv, publicEncrypt, constants, randomBytes, createHash } from 'crypto'
-import USER_API_RENDERER_EVENT_NAME from '../rendererEvent/name'
+import DEFAULT_EVENT_NAMES from '../rendererEvent/name'
 import { httpOverHttp, httpsOverHttp } from 'tunnel'
+
+// Radio providers run separately from the user's selected source. Their IPC must
+// never update the normal source's status, request queue or update dialogs.
+const channelArg = process.argv.find(arg => /^--lx-user-api-channel=radio_[a-f0-9]+$/.test(arg))
+const channel = channelArg?.split('=')[1]
+const USER_API_RENDERER_EVENT_NAME = channel
+  ? Object.fromEntries(Object.keys(DEFAULT_EVENT_NAMES).map(key => [key, `${channel}_${key}`]))
+  : DEFAULT_EVENT_NAMES
 
 
 const sendMessage = (action, data, status, message) => {

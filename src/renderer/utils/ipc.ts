@@ -643,8 +643,11 @@ export const getThemes = async() => {
  * @param type URL音质
  * @returns
  */
-export const getMusicUrl = async(musicInfo: LX.Music.MusicInfo, type: LX.Quality): Promise<string> => {
-  return rendererInvoke<string, string>(WIN_MAIN_RENDERER_EVENT_NAME.get_music_url, `${musicInfo.id}_${type}`)
+const musicUrlKey = (musicInfo: LX.Music.MusicInfo, type: LX.Quality, radio = false) =>
+  radio ? `radio_identity_v2:${musicInfo.source}:${musicInfo.id}:${type}` : `${musicInfo.id}_${type}`
+
+export const getMusicUrl = async(musicInfo: LX.Music.MusicInfo, type: LX.Quality, radio = false): Promise<string> => {
+  return rendererInvoke<string, string>(WIN_MAIN_RENDERER_EVENT_NAME.get_music_url, musicUrlKey(musicInfo, type, radio))
 }
 
 /**
@@ -653,9 +656,9 @@ export const getMusicUrl = async(musicInfo: LX.Music.MusicInfo, type: LX.Quality
  * @param type URL音质
  * @param url 歌曲URL
  */
-export const saveMusicUrl = async(musicInfo: LX.Music.MusicInfo, type: LX.Quality, url: string) => {
+export const saveMusicUrl = async(musicInfo: LX.Music.MusicInfo, type: LX.Quality, url: string, radio = false) => {
   await rendererInvoke<LX.Music.MusicUrlInfo>(WIN_MAIN_RENDERER_EVENT_NAME.save_music_url, {
-    id: `${musicInfo.id}_${type}`,
+    id: musicUrlKey(musicInfo, type, radio),
     url,
   })
 }

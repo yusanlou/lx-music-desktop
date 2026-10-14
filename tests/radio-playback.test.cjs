@@ -11,13 +11,26 @@ const compiled = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
 const runtime = new Module(filename, module)
 runtime._compile(compiled, filename)
 const { RadioPlayback } = runtime.exports
+const queueFile = path.resolve(__dirname, '../src/renderer/core/radio/queue.ts')
+const queueRuntime = new Module(queueFile, module)
+queueRuntime._compile(ts.transpileModule(fs.readFileSync(queueFile, 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText, queueFile)
 
-function fixture() {
+const matchingFile = path.resolve(__dirname, '../src/renderer/core/radio/matching.ts')
+const commonFile = path.resolve(__dirname, '../src/common/radioAudio.ts')
+const commonRuntime = new Module(commonFile, module)
+commonRuntime._compile(ts.transpileModule(fs.readFileSync(commonFile, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, commonFile)
+const matchingRuntime = new Module(matchingFile, module)
+matchingRuntime.require = name => name === '@common/radioAudio' ? commonRuntime.exports : require(name)
+matchingRuntime._compile(ts.transpileModule(fs.readFileSync(matchingFile, 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, matchingFile)
+
+function fixture(audioDuration = 8) {
   const audios = []
   const playback = new RadioPlayback(() => {
     const audio = {
       plays: 0, pauses: 0,
-      duration: 8, currentTime: 0,
+      duration: audioDuration, currentTime: 0,
       play() { this.plays++; return Promise.resolve() },
       pause() { this.pauses++ },
       removeAttribute() {},
@@ -32,6 +45,51 @@ function fixture() {
 async function prepare(playback, key = 'wy:next') {
   assert.equal(await playback.prepare(playback.sessionId, key, '下一首的故事', 'data:audio/mpeg;base64,abc', () => true, { afterText: '下一首的故事' }), true)
 }
+
+test('diagnostic speech restores music without advancing songs or consuming host cues', async(t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] })
+  const { playback, audios } = fixture(3)
+  assert.equal((await playback.announceProgress('正在查歌曲资料。', 'data:audio/mpeg;base64,SUQz')).played, true)
+  t.mock.timers.tick(250)
+  assert.equal(audios[0].plays, 1)
+  assert.equal(playback.status().speechKind, 'progress')
+  audios[0].onended()
+  t.mock.timers.tick(500)
+  assert.equal(playback.musicGain, 1)
+  assert.equal(playback.musicStarted, false)
+  assert.equal(playback.status().interjectionCount, 0)
+  assert.deepEqual(playback.status().recentSpeech, [])
+  assert.equal((await playback.announceProgress('另一条日志。', 'audio')).played, false)
+  playback.cancel()
+})
+
+test('formal opening preempts diagnostic audio without losing prepared speech', async(t) => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] })
+  const { playback, audios } = fixture(3)
+  await prepare(playback)
+  await playback.announceProgress('正在查歌曲资料。', 'audio')
+  t.mock.timers.tick(250)
+  let started = 0
+  assert.equal(playback.beforeSong('wy:next', () => { started++ }), true)
+  assert.equal(playback.status().speechKind, 'intro')
+  assert.equal(audios[1].onended, null)
+  assert.equal(started, 0)
+  audios[0].onended()
+  assert.equal(started, 1)
+  playback.cancel()
+})
+
+test('diagnostic speech rejects long audio and paused or speaking playback', async() => {
+  const { playback } = fixture()
+  assert.equal((await playback.announceProgress('正在查资料。', 'audio')).reason, 'stale_or_too_long')
+  playback.pause()
+  assert.equal((await playback.announceProgress('正在查资料。', 'audio')).played, false)
+  playback.resume()
+  await prepare(playback)
+  playback.beforeSong('wy:next', () => {})
+  assert.equal((await playback.announceProgress('正在查资料。', 'audio')).played, false)
+  playback.cancel()
+})
 
 test('intro sentence cue starts music once at normal volume, regardless of old duck settings', async t => {
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'] })
@@ -421,6 +479,8 @@ function urlFixture() {
     '@renderer/core/dislikeList': {}, '@renderer/core/radio/playback': { radioPlayback: { allowsMusic: true } },
     '@renderer/store/player/volume': {},
     '@renderer/core/radio/resource': {},
+    '@renderer/core/radio/matching': matchingRuntime.exports,
+    '@renderer/core/radio/sources': { configureRadioSources: async () => {} },
   }
   const action = new Module(actionFile, module)
   action.require = name => {
@@ -455,7 +515,7 @@ test('normal-volume opening cannot discard the in-flight music URL just because 
   }
 })
 
-function radioBridgeFixture({ missingFirst = false, invalidFirstAudio = false } = {}) {
+function radioBridgeFixture({ missingFirst = false, invalidFirstAudio = false, firstResults } = {}) {
   const { playback, audios } = fixture()
   playback.configure(true, 1.6)
   playback.setVolume(0.35, false)
@@ -472,8 +532,8 @@ function radioBridgeFixture({ missingFirst = false, invalidFirstAudio = false } 
     '@common/ipcNames': { WIN_MAIN_RENDERER_EVENT_NAME: {} },
     '@common/utils/vueTools': { watch() {}, markRaw: value => value },
     '@renderer/utils': { deduplicationList: list => list },
-    '@renderer/store/search/music/action': { search: async keyword => {
-      if (keyword.includes('晴天')) return missingFirst ? [] : [first]
+    '@renderer/core/radio/search': { searchRadioMusic: async keyword => {
+      if (keyword.includes('晴天')) return missingFirst ? [] : firstResults ?? [first]
       return [second]
     } },
     '@renderer/store/player/state': { playMusicInfo: {}, playInfo: {}, isPlay: { value: false } },
@@ -488,6 +548,10 @@ function radioBridgeFixture({ missingFirst = false, invalidFirstAudio = false } 
     } },
     '@renderer/core/radio/playback': { radioPlayback: playback, songKey: song => `${song.source}:${song.id}` },
     '@renderer/core/radio/mode': { miniRadioMode: { value: false } },
+    '@renderer/core/radio/queue': queueRuntime.exports,
+    '@renderer/core/radio/matching': matchingRuntime.exports,
+    '@renderer/core/radio/hostSettings': { getHostSettings: async () => ({ ok: false }) },
+    '@renderer/core/radio/sources': { configureRadioSources: async () => {} },
     '@renderer/core/music': { getMusicUrl: async() => {
       if (invalidFirstAudio) throw new Error('short_audio')
       return 'validated-first-song'
@@ -540,7 +604,7 @@ test('MCP refuses to start radio without opening or attach a missing first song 
     const { invoke, order, playback } = radioBridgeFixture({ missingFirst })
     const response = await invoke({ songs: openingSongs, ...(missingFirst ? { opening: firstOpening } : {}) })
     assert.equal(response.result.played, false)
-    assert.equal(response.result.reason, missingFirst ? 'opening_song_unavailable' : 'opening_required')
+    assert.equal(response.result.reason, missingFirst ? 'no_matching_song' : 'opening_required')
     assert.deepEqual(order, [])
     playback.cancel()
   }
@@ -553,5 +617,66 @@ test('a failed first-song audio preflight returns to the agent without starting 
   assert.equal(response.result.reason, 'opening_song_unavailable')
   assert.deepEqual(response.result.failed, [openingSongs[0]])
   assert.deepEqual(order, [])
+  playback.cancel()
+})
+
+
+test('radio never substitutes a DJ version under an opening written for the original song', async () => {
+  const { invoke, order, playback } = radioBridgeFixture({ firstResults: [
+    { id: 'first', source: 'wy', name: '晴天 (DJ版)', singer: '周杰伦', interval: '04:00', meta: {} },
+  ] })
+  const response = await invoke({ songs: openingSongs, opening: firstOpening })
+  assert.equal(response.result.played, false)
+  assert.deepEqual(order, [])
+  playback.cancel()
+})
+
+
+test('song matching accepts artist aliases while excluding covers, similar names and preview metadata', () => {
+  const pick = matchingRuntime.exports.selectRadioSong
+  const song = (id, name, singer, interval = '03:21') => ({ id, name, singer, interval })
+  const wanted = { name: '跳楼机', singer: 'LBI利比' }
+  const original = song('original', '跳楼机', 'LBI利比（时柏尘）')
+  const list = [song('dj', '跳楼机 (DJ版)', 'LBI利比'), song('speed', '跳楼机 (1.1x)', 'LBI利比'),
+    song('cover', '跳楼机', '其他歌手'), song('preview', '跳楼机', 'LBI利比', '00:30'), original]
+  assert.equal(pick(list, wanted), original)
+  assert.equal(pick([song('wrong', '晴天', '周杰伦翻唱')], { name: '晴天', singer: '周杰伦' }), undefined)
+  assert.equal(pick(list.slice(0, 4), wanted), undefined)
+  assert.equal(pick([original], { name: '跳楼机', singer: '时柏尘' }), original)
+  const live = song('live', '跳楼机 (Live)', 'LBI利比')
+  assert.equal(pick([original, live], { name: '跳楼机 (Live)', singer: 'LBI利比' }), live)
+})
+
+
+test('live host volume preserves playing speech, prepared audio and the radio session', async () => {
+  const { playback, audios } = fixture()
+  playback.setVolume(.3, false)
+  await prepare(playback)
+  playback.songChanged()
+  playback.beforeSong('wy:next', () => {})
+  const session = playback.sessionId, position = playback.positionId
+  const plays = audios[0].plays
+  playback.updateSettings({ 'speech.voice_gain': 2, 'radio.interjection_voice_gain': .8 })
+  assert.equal(audios[0].volume, .6)
+  assert.equal(audios[0].plays, plays)
+  assert.equal(playback.sessionId, session)
+  assert.equal(playback.positionId, position)
+  assert.equal(playback.status().introduction, '下一首的故事')
+  playback.cancel()
+})
+
+
+test('setting interjection count to zero cancels a pending cue without resetting the song', async () => {
+  const { playback, audios } = fixture()
+  playback.updateSong(10, 100, true)
+  assert.equal((await interjection(playback)).prepared, true)
+  const session = playback.sessionId, position = playback.positionId
+  playback.updateSettings({ 'host.regular_interjections': 0 })
+  assert.equal(playback.status().scheduledInterjection, null)
+  playback.updateSong(40, 100, true)
+  assert.equal(audios[0].plays, 0)
+  assert.equal(playback.musicGain, 1)
+  assert.equal(playback.sessionId, session)
+  assert.equal(playback.positionId, position)
   playback.cancel()
 })

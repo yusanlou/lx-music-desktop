@@ -1,7 +1,7 @@
 import { onBeforeUnmount, watch } from '@common/utils/vueTools'
 import { onTimeupdate, getCurrentTime } from '@renderer/plugins/player'
 import { playProgress } from '@renderer/store/player/playProgress'
-import { musicInfo } from '@renderer/store/player/state'
+import { musicInfo, playMusicInfo } from '@renderer/store/player/state'
 import { radioPlayback } from '@renderer/core/radio/playback'
 import { validateRadioAudio } from '@renderer/core/radio/resource'
 import { tempListMeta } from '@renderer/store/list/state'
@@ -68,7 +68,7 @@ const preloadNextMusicUrl = async(curTime: number) => {
   if (info) {
     preloadMusicInfo.info = info
     const validateUrl = radioPlayback.enabled && info.listId === LIST_IDS.TEMP &&
-      tempListMeta.id?.startsWith('mcp_radio_') === true ? validateRadioAudio : undefined
+      tempListMeta.id?.startsWith('mcp_radio_') === true ? (url: string) => validateRadioAudio(url, undefined, undefined, 'progress' in info.musicInfo ? info.musicInfo.metadata.musicInfo.interval : info.musicInfo.interval) : undefined
     const url = await getMusicUrl({ musicInfo: info.musicInfo, validateUrl }).catch(() => '')
     if (url) {
       console.log('preload url', url)
@@ -106,7 +106,9 @@ export default () => {
   const rOnTimeupdate = onTimeupdate(() => {
     const time = getCurrentTime()
     const duration = playProgress.maxPlayTime
-    if (duration > 10 && duration - time < 10 && !preloadMusicInfo.info) {
+    const leadTime = radioPlayback.enabled && playMusicInfo.listId === LIST_IDS.TEMP &&
+      tempListMeta.id?.startsWith('mcp_radio_') === true && !playMusicInfo.isTempPlay ? 60 : 10
+    if (duration > leadTime && duration - time < leadTime && !preloadMusicInfo.info) {
       void preloadNextMusicUrl(time)
     }
   })

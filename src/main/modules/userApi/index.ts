@@ -1,6 +1,7 @@
 import { closeWindow } from './main'
 import { getUserApis, importApi as handleImportApi, removeApi as handleRemoveApi, setAllowShowUpdateAlert as saveAllowShowUpdateAlert } from './utils'
 import { loadApi, setAllowShowUpdateAlert as setRendererEventAllowShowUpdateAlert, init } from './rendererEvent/rendererEvent'
+import { closeRadioSources } from '../radioSources'
 
 let userApiId: string | null
 
@@ -44,6 +45,7 @@ export default () => {
   init()
 
   global.lx.event_app.on('main_window_close', () => {
+    closeRadioSources()
     void closeWindow()
   })
 }

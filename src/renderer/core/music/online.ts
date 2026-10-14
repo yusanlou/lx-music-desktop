@@ -13,7 +13,10 @@ import {
   handleGetOnlineMusicUrl,
   handleGetOnlinePicUrl,
   getCachedLyricInfo,
+  getOtherSource,
 } from './utils'
+import { radioSourcesEnabled, resolveRadioMusicUrl, observeRadioSong, validateRadioMusicIdentity } from '@renderer/core/radio/sources'
+import { isSameRadioRecording } from '@renderer/core/radio/matching'
 
 /* export const setMusicUrl = ({ musicInfo, type, url }: {
   musicInfo: LX.Music.MusicInfo
@@ -54,19 +57,67 @@ export const getMusicUrl = async({ musicInfo, quality, isRefresh, allowToggleSou
   //   // return Promise.reject(new Error('该歌曲没有可播放的音频'))
   // }
   const targetQuality = quality ?? getPlayQuality(appSetting['player.playQuality'], musicInfo)
-  const cachedUrl = await getStoreMusicUrl(musicInfo, targetQuality)
+  if (validateUrl) {
+    const validateMedia = validateUrl
+    validateUrl = async url => {
+      await validateRadioMusicIdentity(url, musicInfo)
+      await validateMedia(url)
+    }
+  }
+  if (validateUrl && radioSourcesEnabled.value) observeRadioSong(musicInfo, targetQuality)
+  // Legacy URLs have no recording provenance and may contain fuzzy matches.
+  const cachedUrl = await getStoreMusicUrl(musicInfo, targetQuality, !!validateUrl)
+  let failedUrl = isRefresh ? cachedUrl ?? undefined : undefined
   if (cachedUrl && !isRefresh) {
     try {
       await validateUrl?.(cachedUrl)
       return cachedUrl
     } catch (err: any) {
       if (err.name === 'AbortError' || err.message === requestMsg.cancelRequest) throw err
+      failedUrl = cachedUrl
+    }
+  }
+
+  if (validateUrl && radioSourcesEnabled.value) {
+    // This route remains usable even when the normal custom API failed to init.
+    // Try providers within each platform budget, then matching songs elsewhere.
+    const deadline = Date.now() + 65_000
+    const attempt = async(song: LX.Music.MusicInfoOnline, budget: number) => {
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) throw new Error('radio_sources_timeout')
+      const url = await resolveRadioMusicUrl(song, targetQuality, isRefresh, failedUrl, Math.min(remaining, budget, allowToggleSource ? 20_000 : 65_000))
+      await validateUrl(url)
+      void saveMusicUrl(song, targetQuality, url, true)
+      void saveMusicUrl(musicInfo, targetQuality, url, true)
+      return url
+    }
+    // Bound each platform so a slow catalog cannot starve cross-platform recovery.
+    try { return await attempt(musicInfo, allowToggleSource ? 20_000 : 65_000) } catch (error: any) {
+      if (!allowToggleSource || error.name === 'AbortError' || error.message === requestMsg.cancelRequest) throw error
+      const remaining = deadline - Date.now()
+      if (remaining <= 0) throw error
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const alternatives = await Promise.race([getOtherSource(musicInfo), new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => { reject(new Error('radio_sources_timeout')) }, remaining)
+      })]).finally(() => { if (timer) clearTimeout(timer) })
+      const tried = new Set([musicInfo.source])
+      for (const song of alternatives) {
+        if (!isSameRadioRecording(song, musicInfo)) continue
+        if (tried.has(song.source)) continue
+        tried.add(song.source)
+        // Keep failover invisible; this callback only updates internal metadata.
+        onToggleSource(song)
+        try { return await attempt(song, deadline - Date.now()) } catch (alternateError: any) {
+          if (alternateError.name === 'AbortError' || alternateError.message === requestMsg.cancelRequest) throw alternateError
+        }
+      }
+      throw error
     }
   }
 
   return handleGetOnlineMusicUrl({ musicInfo, quality, onToggleSource, isRefresh, allowToggleSource, validateUrl }).then(({ url, quality: targetQuality, musicInfo: targetMusicInfo, isFromCache }) => {
-    if (targetMusicInfo.id != musicInfo.id && !isFromCache) void saveMusicUrl(targetMusicInfo, targetQuality, url)
-    void saveMusicUrl(musicInfo, targetQuality, url)
+    if (targetMusicInfo.id != musicInfo.id && !isFromCache) void saveMusicUrl(targetMusicInfo, targetQuality, url, !!validateUrl)
+    void saveMusicUrl(musicInfo, targetQuality, url, !!validateUrl)
     return url
   })
 }

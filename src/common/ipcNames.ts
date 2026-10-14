@@ -112,6 +112,13 @@ const modules = {
     user_api_status: 'user_api_status',
     user_api_show_update_alert: 'user_api_show_update_alert',
     user_api_set_allow_update_alert: 'user_api_set_allow_update_alert',
+    radio_host_settings_get: 'radio_host_settings_get',
+    radio_host_settings_save: 'radio_host_settings_save',
+    radio_sources_configure: 'radio_sources_configure',
+    radio_sources_resolve: 'radio_sources_resolve',
+    radio_sources_status: 'radio_sources_status',
+    radio_sources_observe: 'radio_sources_observe',
+    radio_audio_identity: 'radio_audio_identity',
 
     get_palyer_lyric: 'get_lyric',
     // save_lyric: 'save_lyric',

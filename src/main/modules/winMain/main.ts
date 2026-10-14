@@ -123,7 +123,7 @@ export const createWindow = () => {
   browserWindow = new BrowserWindow(options)
 
   const winURL = process.env.NODE_ENV !== 'production' ? 'http://localhost:9080' : `file://${path.join(encodePath(__dirname), 'index.html')}`
-  void browserWindow.loadURL(winURL + `?os=${getPlatform()}&osver=${encodeURIComponent(getOSVersion())}&dt=${disableTransparent}&dark=${shouldUseDarkColors}&radio=${isMiniRadio ? 'mini' : 'full'}&theme=${encodeURIComponent(JSON.stringify(theme))}`)
+  void browserWindow.loadURL(winURL + `?os=${getPlatform()}&osver=${encodeURIComponent(getOSVersion())}&dt=${disableTransparent}&dark=${shouldUseDarkColors}&radio=${isMiniRadio ? 'mini' : 'full'}&radioSession=${app.commandLine.hasSwitch('lx-radio-session') ? '1' : '0'}&theme=${encodeURIComponent(JSON.stringify(theme))}`)
 
   winEvent()
 

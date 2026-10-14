@@ -10,6 +10,8 @@ import { playProgress, setNowPlayTime, setMaxplayTime } from '@renderer/store/pl
 import { appSetting } from '@renderer/store/setting'
 import { playNext } from '@renderer/core/player'
 import { updateListMusics } from '@renderer/store/list/action'
+import { tempListMeta } from '@renderer/store/list/state'
+import { LIST_IDS } from '@common/constants'
 
 const delaySavePlayInfo = throttle(savePlayInfo, 2000)
 
@@ -26,6 +28,10 @@ export default () => {
   // const updateMusicInfo = useCommit('list', 'updateMusicInfo')
 
   const startBuffering = () => {
+    // Radio recovers stalled audio by refreshing providers at the same position.
+    // Repeatedly seeking forward here would hide a dead source and skip lyrics.
+    if (radioPlayback.enabled && playMusicInfo.listId === LIST_IDS.TEMP &&
+      !playMusicInfo.isTempPlay && tempListMeta.id?.startsWith('mcp_radio_') === true) return
     console.log('start t')
     if (mediaBuffer.timeout) return
     mediaBuffer.timeout = setTimeout(() => {

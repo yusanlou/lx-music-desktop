@@ -11,6 +11,7 @@ import { appSetting } from '@renderer/store/setting'
 import { langS2T, toNewMusicInfo, toOldMusicInfo } from '@renderer/utils'
 import { requestMsg } from '@renderer/utils/message'
 import { apis } from '@renderer/utils/musicSdk/api-source'
+import { isSameRadioRecording } from '@renderer/core/radio/matching'
 
 
 const getOtherSourcePromises = new Map()
@@ -265,7 +266,7 @@ export const getOnlineOtherSourceMusicUrl = async({ musicInfos, quality, onToggl
   }
   if (!musicInfo || !itemQuality) throw new Error(window.i18n.t('toggle_source_failed'))
 
-  const cachedUrl = await getStoreMusicUrl(musicInfo, itemQuality)
+  const cachedUrl = await getStoreMusicUrl(musicInfo, itemQuality, !!validateUrl)
   if (cachedUrl && !isRefresh) {
     try {
       await validateUrl?.(cachedUrl)
@@ -332,7 +333,7 @@ export const handleGetOnlineMusicUrl = async({ musicInfo, quality, onToggleSourc
       console.log('find otherSource', otherSource)
       if (otherSource.length) {
         return getOnlineOtherSourceMusicUrl({
-          musicInfos: [...otherSource],
+          musicInfos: validateUrl ? otherSource.filter(song => isSameRadioRecording(song, musicInfo)) : [...otherSource],
           onToggleSource,
           quality,
           isRefresh,
