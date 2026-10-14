@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, session } from 'electron'
+import { app, BrowserWindow, dialog, session } from 'electron'
 import path from 'node:path'
 import { createTaskBarButtons, getWindowSizeInfo } from './utils'
 import { getOSVersion, getPlatform, isLinux, isMac, isWin } from '@common/utils'
@@ -8,12 +8,13 @@ import { sendFocus, sendTaskbarButtonClick } from './rendererEvent'
 import { encodePath } from '@common/utils/electron'
 
 let browserWindow: Electron.BrowserWindow | null = null
+const isMiniRadio = app.commandLine.hasSwitch('lx-radio-mini')
 
 const winEvent = () => {
   if (!browserWindow) return
 
   browserWindow.on('close', event => {
-    if (global.lx.isSkipTrayQuit || !global.lx.appSetting['tray.enable']) {
+    if (isMiniRadio || global.lx.isSkipTrayQuit || !global.lx.appSetting['tray.enable']) {
       browserWindow!.setProgressBar(-1)
       // global.lx.mainWindowClosed = true
       global.lx.event_app.main_window_close()
@@ -27,6 +28,7 @@ const winEvent = () => {
   browserWindow.on('closed', () => {
     // global.lx.mainWindowClosed = true
     browserWindow = null
+    if (isMiniRadio) app.quit()
   })
 
   // browserWindow.on('restore', () => {
@@ -76,7 +78,8 @@ const winEvent = () => {
 
 export const createWindow = () => {
   closeWindow()
-  const windowSizeInfo = getWindowSizeInfo(global.lx.appSetting['common.windowSizeId'])
+  const windowSizeInfo = isMiniRadio ? { width: 390, height: 440 } : getWindowSizeInfo(global.lx.appSetting['common.windowSizeId'])
+  const disableTransparent = isMiniRadio || global.envParams.cmdParams.dt
 
   const { shouldUseDarkColors, theme } = global.lx.theme
   const ses = session.fromPartition('persist:win-main')
@@ -91,14 +94,14 @@ export const createWindow = () => {
     useContentSize: true,
     width: windowSizeInfo.width,
     frame: false,
-    transparent: !global.envParams.cmdParams.dt,
-    hasShadow: global.envParams.cmdParams.dt,
+    transparent: !disableTransparent,
+    hasShadow: disableTransparent,
     // enableRemoteModule: false,
     // icon: join(global.__static, isWin ? 'icons/256x256.ico' : 'icons/512x512.png'),
     resizable: false,
     maximizable: false,
-    fullscreenable: true,
-    roundedCorners: global.envParams.cmdParams.dt,
+    fullscreenable: !isMiniRadio,
+    roundedCorners: disableTransparent,
     show: false,
     webPreferences: {
       session: ses,
@@ -112,15 +115,15 @@ export const createWindow = () => {
       spellcheck: false, // 禁用拼写检查器
     },
   }
-  if (global.envParams.cmdParams.dt) options.backgroundColor = theme.colors['--color-primary-light-1000']
-  if (global.lx.appSetting['common.startInFullscreen']) {
+  if (disableTransparent) options.backgroundColor = isMiniRadio ? '#213b48' : theme.colors['--color-primary-light-1000']
+  if (!isMiniRadio && global.lx.appSetting['common.startInFullscreen']) {
     options.fullscreen = true
     if (isLinux) options.resizable = true
   }
   browserWindow = new BrowserWindow(options)
 
   const winURL = process.env.NODE_ENV !== 'production' ? 'http://localhost:9080' : `file://${path.join(encodePath(__dirname), 'index.html')}`
-  void browserWindow.loadURL(winURL + `?os=${getPlatform()}&osver=${encodeURIComponent(getOSVersion())}&dt=${global.envParams.cmdParams.dt}&dark=${shouldUseDarkColors}&theme=${encodeURIComponent(JSON.stringify(theme))}`)
+  void browserWindow.loadURL(winURL + `?os=${getPlatform()}&osver=${encodeURIComponent(getOSVersion())}&dt=${disableTransparent}&dark=${shouldUseDarkColors}&radio=${isMiniRadio ? 'mini' : 'full'}&theme=${encodeURIComponent(JSON.stringify(theme))}`)
 
   winEvent()
 
@@ -221,6 +224,8 @@ export const hideWindow = () => {
 export const setWindowBounds = (options: Partial<Electron.Rectangle>) => {
   if (!browserWindow) return
   browserWindow.setBounds(options)
+  // Expanding a centered mini window can put the full layout off screen.
+  if (isMiniRadio && (options.width != null || options.height != null)) browserWindow.center()
 }
 export const setProgressBar = (progress: number, options?: Electron.ProgressBarOptions) => {
   if (!browserWindow) return

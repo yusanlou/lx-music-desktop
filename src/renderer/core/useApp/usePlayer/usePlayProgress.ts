@@ -3,8 +3,9 @@ import { formatPlayTime2, getRandom } from '@common/utils/common'
 import { throttle } from '@common/utils'
 import { savePlayInfo } from '@renderer/utils/ipc'
 import { onTimeupdate, getCurrentTime, getDuration, setCurrentTime, onVisibilityChange } from '@renderer/plugins/player'
+import { radioPlayback } from '@renderer/core/radio/playback'
+import { isPlay, musicInfo, playMusicInfo, playInfo } from '@renderer/store/player/state'
 import { playProgress, setNowPlayTime, setMaxplayTime } from '@renderer/store/player/playProgress'
-import { musicInfo, playMusicInfo, playInfo } from '@renderer/store/player/state'
 // import { getList } from '@renderer/store/utils'
 import { appSetting } from '@renderer/store/setting'
 import { playNext } from '@renderer/core/player'
@@ -176,6 +177,7 @@ export default () => {
   window.app_event.on('musicToggled', handleSetPlayInfo)
 
   const rOnTimeupdate = onTimeupdate(() => {
+    radioPlayback.updateSong(getCurrentTime(), getDuration(), isPlay.value)
     setNowPlayTime(getCurrentTime())
   })
 

@@ -4,11 +4,13 @@ import { appSetting } from '@renderer/store/setting'
 import { sendSyncAction, setWindowSize } from '@renderer/utils/ipc'
 import { setLanguage } from '@root/lang'
 import { setUserApi } from '../apiSource'
+import { miniRadioMode } from '@renderer/core/radio/mode'
 // import { applyTheme, getThemes } from '@renderer/store/utils'
 
 
 export default () => {
   watch(() => appSetting['common.windowSizeId'], (index) => {
+    if (miniRadioMode.value) return
     const info = index == null ? windowSizeList[2] : windowSizeList[index]
     setWindowSize(info.width, info.height)
   })

@@ -18,11 +18,23 @@ import { filterList } from './utils'
 import { requestMsg } from '@renderer/utils/message'
 import { getRandom } from '@renderer/utils/index'
 import { addListMusics, removeListMusics } from '@renderer/store/list/action'
-import { loveList } from '@renderer/store/list/state'
+import { loveList, tempListMeta } from '@renderer/store/list/state'
+import { LIST_IDS } from '@common/constants'
 import { addDislikeInfo } from '@renderer/core/dislikeList'
+import { radioPlayback, songKey } from '@renderer/core/radio/playback'
+import { validateRadioAudio } from '@renderer/core/radio/resource'
+import { volume, isMute } from '@renderer/store/player/volume'
 // import { checkMusicFileAvailable } from '@renderer/utils/music'
 
 let gettingUrlId = ''
+let resourceAbort: AbortController | null = null
+const cancelResourceProbe = () => {
+  resourceAbort?.abort()
+  resourceAbort = null
+  gettingUrlId = ''
+}
+const isRadioQueue = () => radioPlayback.enabled && playMusicInfo.listId === LIST_IDS.TEMP &&
+  !playMusicInfo.isTempPlay && tempListMeta.id?.startsWith('mcp_radio_') === true
 const createGettingUrlId = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem) => {
   const tInfo = 'progress' in musicInfo ? musicInfo.metadata.musicInfo.meta.toggleMusicInfo : musicInfo.meta.toggleMusicInfo
   return `${musicInfo.id}_${tInfo?.id ?? ''}`
@@ -60,17 +72,20 @@ const { addDelayNextTimeout: addLoadTimeout, clearDelayNextTimeout: clearLoadTim
  */
 const diffCurrentMusicInfo = (curMusicInfo: LX.Music.MusicInfo | LX.Download.ListItem): boolean => {
   // return curMusicInfo !== playMusicInfo.musicInfo || isPlay.value
-  return gettingUrlId != createGettingUrlId(curMusicInfo) || curMusicInfo.id != playMusicInfo.musicInfo?.id || isPlay.value
+  // Opening speech also marks the UI playing while the music URL is loading.
+  // Only a loaded music resource makes that play flag invalidate a pending URL.
+  return gettingUrlId != createGettingUrlId(curMusicInfo) || curMusicInfo.id != playMusicInfo.musicInfo?.id || (isPlay.value && !isEmpty())
 }
 
 let cancelDelayRetry: (() => void) | null = null
-const delayRetry = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, isRefresh = false): Promise<string | null> => {
+const delayRetry = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, isRefresh = false,
+  validateUrl?: (url: string) => Promise<void>): Promise<string | null> => {
   // if (cancelDelayRetry) cancelDelayRetry()
   return new Promise<string | null>((resolve, reject) => {
     const time = getRandom(2, 6)
     setAllStatus(window.i18n.t('player__getting_url_delay_retry', { time }))
     const tiemout = setTimeout(() => {
-      getMusicPlayUrl(musicInfo, isRefresh, true).then((result) => {
+      getMusicPlayUrl(musicInfo, isRefresh, true, validateUrl).then((result) => {
         cancelDelayRetry = null
         resolve(result)
       }).catch(async(err: any) => {
@@ -85,7 +100,8 @@ const delayRetry = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, i
     }
   })
 }
-const getMusicPlayUrl = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, isRefresh = false, isRetryed = false): Promise<string | null> => {
+const getMusicPlayUrl = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, isRefresh = false, isRetryed = false,
+  validateUrl?: (url: string) => Promise<void>): Promise<string | null> => {
   // this.musicInfo.url = await getMusicPlayUrl(targetSong, type)
   setAllStatus(window.i18n.t('player__getting_url'))
   if (appSetting['player.autoSkipOnError']) addLoadTimeout()
@@ -97,10 +113,13 @@ const getMusicPlayUrl = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListIt
     musicInfo: toggleMusicInfo,
     isRefresh,
     allowToggleSource: false,
-  }) : Promise.reject(new Error('not found'))).catch(async() => {
+    validateUrl,
+  }) : Promise.reject(new Error('not found'))).catch(async(err: any) => {
+    if (err.name === 'AbortError' || err.message === requestMsg.cancelRequest) throw err
     return getMusicUrl({
       musicInfo,
       isRefresh,
+      validateUrl,
       onToggleSource(mInfo) {
         if (diffCurrentMusicInfo(musicInfo)) return
         setAllStatus(window.i18n.t('toggle_source_try'))
@@ -113,11 +132,14 @@ const getMusicPlayUrl = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListIt
   // eslint-disable-next-line @typescript-eslint/promise-function-async
   }).catch(err => {
     // console.log('err', err.message)
-    if (window.lx.isPlayedStop ||
+    if (err.name === 'AbortError' || window.lx.isPlayedStop ||
       diffCurrentMusicInfo(musicInfo) ||
       err.message == requestMsg.cancelRequest) return null
 
-    if (err.message == requestMsg.tooManyRequests) return delayRetry(musicInfo, isRefresh)
+    if (err.message == requestMsg.tooManyRequests) return delayRetry(musicInfo, isRefresh, validateUrl)
+
+    // Radio already checked each source. Do not repeat the same placeholder URLs.
+    if (validateUrl) throw err
 
     if (!isRetryed) return getMusicPlayUrl(musicInfo, isRefresh, true)
 
@@ -125,22 +147,43 @@ const getMusicPlayUrl = async(musicInfo: LX.Music.MusicInfo | LX.Download.ListIt
   })
 }
 
-export const setMusicUrl = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, isRefresh?: boolean) => {
+export const setMusicUrl = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem, isRefresh?: boolean, onReady?: (url: string) => void) => {
+  if (!radioPlayback.allowsMusic) return
   // if (appSetting['player.autoSkipOnError']) addLoadTimeout()
   if (!diffCurrentMusicInfo(musicInfo)) return
   if (cancelDelayRetry) cancelDelayRetry()
+  cancelResourceProbe()
+  const request = new AbortController()
+  resourceAbort = request
+  const radio = isRadioQueue()
+  const sessionId = radioPlayback.sessionId
+  const positionId = radioPlayback.positionId
+  const validateUrl = radio ? async(url: string) => {
+    if ((radioPlayback.enabled && radioPlayback.sessionId !== sessionId) || radioPlayback.positionId !== positionId) request.abort()
+    await validateRadioAudio(url, request.signal)
+  } : undefined
   gettingUrlId = createGettingUrlId(musicInfo)
-  void getMusicPlayUrl(musicInfo, isRefresh).then((url) => {
-    if (!url) return
-    setResource(url)
+  void getMusicPlayUrl(musicInfo, isRefresh, false, validateUrl).then((url) => {
+    if (!url || request.signal.aborted || playMusicInfo.musicInfo !== musicInfo) return
+    if (onReady) onReady(url)
+    else setResource(url)
   }).catch((err: any) => {
+    if (request.signal.aborted || playMusicInfo.musicInfo !== musicInfo) return
     console.log(err)
+    if (radio && isRadioQueue() && radioPlayback.sessionId === sessionId) {
+      const info = 'progress' in musicInfo ? musicInfo.metadata.musicInfo : musicInfo
+      radioPlayback.rejectMusic(songKey(info), '没有可用的完整歌曲音频')
+      resetRandomNextMusicInfo()
+      skipUnavailableRadioSong(musicInfo)
+      return
+    }
     setAllStatus(err.message)
     window.app_event.error()
     if (appSetting['player.autoSkipOnError']) addDelayNextTimeout()
   }).finally(() => {
-    if (musicInfo === playMusicInfo.musicInfo) {
+    if (musicInfo === playMusicInfo.musicInfo && resourceAbort === request) {
       gettingUrlId = ''
+      resourceAbort = null
       clearLoadTimeout()
     }
   })
@@ -186,6 +229,8 @@ const handleRestorePlay = async(restorePlayInfo: LX.Player.SavedPlayInfo) => {
 
 // 处理音乐播放
 const handlePlay = () => {
+  cancelResourceProbe()
+  radioPlayback.songChanged()
   window.lx.isPlayedStop &&= false
 
   resetRandomNextMusicInfo()
@@ -207,7 +252,31 @@ const handlePlay = () => {
 
   if (appSetting['player.togglePlayMethod'] == 'random' && !playMusicInfo.isTempPlay) addPlayedList({ ...(playMusicInfo as LX.Player.PlayMusicInfo) })
 
-  setMusicUrl(musicInfo)
+  const startSong = () => {
+    if (playMusicInfo.musicInfo !== musicInfo || window.lx.isPlayedStop) return
+    window.app_event.pause()
+    setMusicUrl(musicInfo)
+  }
+  const info = 'progress' in musicInfo ? musicInfo.metadata.musicInfo : musicInfo
+  if (isRadioQueue()) {
+    if (radioPlayback.isMusicRejected(songKey(info))) {
+      skipUnavailableRadioSong(musicInfo)
+      return
+    }
+    // The real music URL must be valid before announcing this song.
+    setMusicUrl(musicInfo, false, url => {
+      const startValidatedSong = () => {
+        if (playMusicInfo.musicInfo !== musicInfo || window.lx.isPlayedStop) return
+        setResource(url)
+      }
+      radioPlayback.setVolume(volume.value, isMute.value)
+      if (!radioPlayback.beforeSong(songKey(info), startValidatedSong)) startValidatedSong()
+      else if (!radioPlayback.isPaused) window.app_event.play()
+    })
+  } else {
+    radioPlayback.cancel()
+    startSong()
+  }
 
   void getPicPath({ musicInfo, listId: playMusicInfo.listId }).then((url: string) => {
     if (musicInfo.id != playMusicInfo.musicInfo?.id || url == _musicInfo.pic) return
@@ -274,6 +343,15 @@ const handleToggleStop = () => {
 const randomNextMusicInfo = {
   info: null as LX.Player.PlayMusicInfo | null,
   // index: -1,
+}
+
+const playableRadioIndex = (list: Array<LX.Music.MusicInfo | LX.Download.ListItem>, index: number, wrap: boolean) => {
+  for (let attempts = 0; attempts < list.length && index < list.length; attempts++, index++) {
+    const song = list[index]
+    if (!radioPlayback.isMusicRejected(songKey('progress' in song ? song.metadata.musicInfo : song))) return index
+    if (wrap && index === list.length - 1) index = -1
+  }
+  return -1
 }
 export const resetRandomNextMusicInfo = () => {
   if (randomNextMusicInfo.info) {
@@ -349,6 +427,7 @@ export const getNextPlayMusicInfo = async(): Promise<LX.Player.PlayMusicInfo | n
     default:
       return null
   }
+  if (nextIndex >= 0 && isRadioQueue()) nextIndex = playableRadioIndex(filteredList, nextIndex, togglePlayMethod !== 'list')
   if (nextIndex < 0) return null
 
   const nextPlayMusicInfo = {
@@ -369,12 +448,27 @@ const handlePlayNext = (playMusicInfo: LX.Player.PlayMusicInfo) => {
   setPlayMusicInfo(playMusicInfo.listId, playMusicInfo.musicInfo, playMusicInfo.isTempPlay)
   handlePlay()
 }
+const skipUnavailableRadioSong = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem) => {
+  // Pick a different remaining track even in single-loop/random mode.
+  const list = getList(LIST_IDS.TEMP)
+  const index = list.findIndex(song => song.id === musicInfo.id)
+  const ordered = appSetting['player.togglePlayMethod'] === 'list'
+    ? list.slice(index + 1) : [...list.slice(index + 1), ...list.slice(0, index)]
+  const next = ordered.find(song => !radioPlayback.isMusicRejected(songKey('progress' in song ? song.metadata.musicInfo : song)))
+  if (next) handlePlayNext({ listId: LIST_IDS.TEMP, musicInfo: next, isTempPlay: false })
+  else {
+    stop()
+    setAllStatus('本期歌曲暂时均无可用的完整音频，请更换歌单或音源')
+  }
+}
 /**
  * 下一曲
  * @param isAutoToggle 是否自动切换
  * @returns
  */
 export const playNext = async(isAutoToggle = false): Promise<void> => {
+  cancelResourceProbe()
+  radioPlayback.songChanged()
   console.log('skip next', isAutoToggle)
   if (tempPlayList.length) { // 如果稍后播放列表存在歌曲则直接播放改列表的歌曲
     const playMusicInfo = tempPlayList[0]
@@ -473,6 +567,7 @@ export const playNext = async(isAutoToggle = false): Promise<void> => {
       console.log('stop toggle play', togglePlayMethod, isAutoToggle)
       return
   }
+  if (nextIndex >= 0 && isRadioQueue()) nextIndex = playableRadioIndex(filteredList, nextIndex, togglePlayMethod !== 'list')
   if (nextIndex < 0) {
     console.log('next index empty')
     return
@@ -489,6 +584,7 @@ export const playNext = async(isAutoToggle = false): Promise<void> => {
  * 上一曲
  */
 export const playPrev = async(isAutoToggle = false): Promise<void> => {
+  radioPlayback.songChanged()
   if (playMusicInfo.musicInfo == null) {
     handleToggleStop()
     return
@@ -582,6 +678,11 @@ export const playPrev = async(isAutoToggle = false): Promise<void> => {
  */
 export const play = () => {
   window.lx.isPlayedStop &&= false
+  if (radioPlayback.resume()) {
+    if (radioPlayback.musicStarted && !isEmpty()) setPlay()
+    window.app_event.play()
+    return
+  }
   if (playMusicInfo.musicInfo == null) return
   if (isEmpty()) {
     if (createGettingUrlId(playMusicInfo.musicInfo) != gettingUrlId) setMusicUrl(playMusicInfo.musicInfo)
@@ -594,13 +695,21 @@ export const play = () => {
  * 暂停播放
  */
 export const pause = () => {
+  if (radioPlayback.pause()) {
+    if (radioPlayback.musicStarted) setPause()
+    window.app_event.pause()
+    return
+  }
   setPause()
+  if (isEmpty()) window.app_event.pause()
 }
 
 /**
  * 停止播放
  */
 export const stop = () => {
+  cancelResourceProbe()
+  radioPlayback.cancel()
   setStop()
   setTimeout(() => {
     window.app_event.stop()

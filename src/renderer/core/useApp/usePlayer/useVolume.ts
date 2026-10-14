@@ -6,6 +6,7 @@ import { HOTKEY_PLAYER } from '@common/hotKey'
 // import { player as eventPlayerNames } from '@renderer/event/names'
 import { volume, isMute, setMute, setVolume } from '@renderer/store/player/volume'
 import { appSetting, saveVolume, saveVolumeIsMute } from '@renderer/store/setting'
+import { radioPlayback } from '@renderer/core/radio/playback'
 
 export default () => {
   const handleSaveVolume = debounce(saveVolume, 300)
@@ -14,6 +15,8 @@ export default () => {
   setMute(appSetting['player.isMute'])
   setPlayerVolume(appSetting['player.volume'])
   setPlayerMute(appSetting['player.isMute'])
+  radioPlayback.setVolume(volume.value, isMute.value)
+  const releaseMusicGain = radioPlayback.setMusicGainHandler(gain => { setPlayerVolume(volume.value * gain) })
 
   const handleToggleVolumeMute = (_isMute?: boolean) => {
     let muteStatus = _isMute ?? !isMute.value
@@ -44,10 +47,12 @@ export default () => {
   }
 
   watch(volume, _volume => {
+    radioPlayback.setVolume(_volume, isMute.value)
     handleSaveVolume(_volume)
-    setPlayerVolume(_volume)
+    setPlayerVolume(_volume * radioPlayback.musicGain)
   })
   watch(isMute, mute => {
+    radioPlayback.setVolume(volume.value, mute)
     saveVolumeIsMute(mute)
     setPlayerMute(mute)
   })
@@ -66,6 +71,7 @@ export default () => {
   window.app_event.on('setVolumeIsMute', handleToggleVolumeMute)
 
   onBeforeUnmount(() => {
+    releaseMusicGain()
     window.key_event.off(HOTKEY_PLAYER.volume_up.action, hotkeyVolumeUp)
     window.key_event.off(HOTKEY_PLAYER.volume_down.action, hotkeyVolumeDown)
     window.key_event.off(HOTKEY_PLAYER.volume_mute.action, hotkeyVolumeMute)

@@ -26,6 +26,7 @@ import {
 } from '@renderer/store/player/action'
 
 import { appSetting } from '@renderer/store/setting'
+import { radioPlayback } from '@renderer/core/radio/playback'
 
 import useLyric from './useLyric'
 import useVolume from './useVolume'
@@ -81,7 +82,7 @@ export default () => {
   }
 
   const handleCanplay = () => {
-    if (window.lx.isPlayedStop) {
+    if (window.lx.isPlayedStop || radioPlayback.isPaused) {
       setPause()
     }
   }

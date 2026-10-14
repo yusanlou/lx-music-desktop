@@ -71,3 +71,8 @@ publish/assets
 publish/utils/githubToken.js
 
 src/**/*-internal.js
+# Local radio preview profile (contains copied personal audio-source settings).
+.radio-preview/
+
+# Python radio launcher and lifecycle tests
+__pycache__/

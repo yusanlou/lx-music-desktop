@@ -1,5 +1,6 @@
 <template>
-  <div id="container" class="view-container">
+  <MiniRadio v-if="miniRadioMode" @settings="showSettings" />
+  <div v-if="fullLayoutReady" v-show="!miniRadioMode" id="container" class="view-container">
     <layout-aside id="left" />
     <div id="right">
       <layout-toolbar id="toolbar" />
@@ -9,20 +10,44 @@
     <layout-icons />
     <layout-change-log-modal />
     <layout-update-modal />
-    <layout-pact-modal />
     <layout-sync-mode-modal />
     <layout-sync-auth-code-modal />
     <layout-play-detail />
+    <button v-if="isMiniRadioWindow" class="return-radio" type="button" @click="returnRadio">返回电台</button>
   </div>
+  <layout-pact-modal />
 </template>
 
 <script setup>
-import { onMounted } from '@common/utils/vueTools'
+import { onMounted, ref, watch } from '@common/utils/vueTools'
 // import BubbleCursor from '@common/utils/effects/cursor-effects/bubbleCursor'
 // import '@common/utils/effects/snow.min'
 import useApp from '@renderer/core/useApp'
+import MiniRadio from '@renderer/components/radio/MiniRadio.vue'
+import { isMiniRadioWindow, miniRadioMode, miniRadioSize } from '@renderer/core/radio/mode'
+import { setWindowSize } from '@renderer/utils/ipc'
+import { windowSizeActive } from '@renderer/store'
+import { useRouter } from '@common/utils/vueRouter'
 
 useApp()
+const router = useRouter()
+// Initialize settings only when needed, then preserve their mounted state.
+const fullLayoutReady = ref(!isMiniRadioWindow)
+const showSettings = async() => {
+  // Mount the full layout only after navigation, so Search's initial query
+  // watchers cannot redirect the new settings navigation.
+  await router.push('/setting')
+  fullLayoutReady.value = true
+  miniRadioMode.value = false
+  setWindowSize(windowSizeActive.value.width, windowSizeActive.value.height)
+}
+const returnRadio = () => {
+  miniRadioMode.value = true
+  setWindowSize(miniRadioSize.width, miniRadioSize.height)
+}
+watch(miniRadioMode, mini => {
+  document.documentElement.classList.toggle('mini-radio', mini)
+}, { immediate: true })
 
 onMounted(() => {
   document.getElementById('root').style.display = 'block'
@@ -159,6 +184,23 @@ body {
 
 .view-container {
   transition: opacity @transition-normal;
+}
+.return-radio {
+  position: absolute;
+  z-index: 5;
+  right: 18px;
+  top: 64px;
+  padding: 6px 10px;
+  border: 1px solid var(--color-primary);
+  border-radius: 5px;
+  color: var(--color-font);
+  background: var(--color-app-background);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+.mini-radio {
+  &.transparent { padding: 0; }
+  #root { background: #213b48; border-radius: 0; }
 }
 #root.show-modal > .view-container {
   opacity: .9;

@@ -6,6 +6,7 @@ import { qualityList, userApi } from '@renderer/store'
 import { appSetting } from '@renderer/store/setting'
 import { dialog } from '@renderer/plugins/Dialog'
 import { setUserApi } from '@renderer/core/apiSource'
+import { miniRadioMode } from '@renderer/core/radio/mode'
 
 const sendUserApiRequest: typeof sendUserApiRequestRemote = async(data) => {
   let stop: () => void
@@ -143,6 +144,8 @@ export default () => {
   })
 
   const rUserApiShowUpdateAlert = onShowUserApiUpdateAlert(({ params: { name, log, updateUrl } }) => {
+    // Keep listening controls available; source maintenance lives in settings.
+    if (miniRadioMode.value) return
     if (updateUrl) {
       void dialog({
         message: `${t('user_api__update_alert', { name })}\n${log}`,

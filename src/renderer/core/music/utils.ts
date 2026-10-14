@@ -234,12 +234,13 @@ export const getPlayQuality = (highQuality: LX.Quality, musicInfo: LX.Music.Musi
   return type
 }
 
-export const getOnlineOtherSourceMusicUrl = async({ musicInfos, quality, onToggleSource, isRefresh, retryedSource = [] }: {
+export const getOnlineOtherSourceMusicUrl = async({ musicInfos, quality, onToggleSource, isRefresh, retryedSource = [], validateUrl }: {
   musicInfos: LX.Music.MusicInfoOnline[]
   quality?: LX.Quality
   onToggleSource: (musicInfo?: LX.Music.MusicInfoOnline) => void
   isRefresh: boolean
   retryedSource?: LX.OnlineSource[]
+  validateUrl?: (url: string) => Promise<void>
 }): Promise<{
   url: string
   musicInfo: LX.Music.MusicInfoOnline
@@ -265,7 +266,14 @@ export const getOnlineOtherSourceMusicUrl = async({ musicInfos, quality, onToggl
   if (!musicInfo || !itemQuality) throw new Error(window.i18n.t('toggle_source_failed'))
 
   const cachedUrl = await getStoreMusicUrl(musicInfo, itemQuality)
-  if (cachedUrl && !isRefresh) return { url: cachedUrl, musicInfo, quality: itemQuality, isFromCache: true }
+  if (cachedUrl && !isRefresh) {
+    try {
+      await validateUrl?.(cachedUrl)
+      return { url: cachedUrl, musicInfo, quality: itemQuality, isFromCache: true }
+    } catch (err: any) {
+      if (err.name === 'AbortError' || err.message === requestMsg.cancelRequest) throw err
+    }
+  }
 
   let reqPromise
   try {
@@ -275,25 +283,27 @@ export const getOnlineOtherSourceMusicUrl = async({ musicInfos, quality, onToggl
   }
   // retryedSource.includes(musicInfo.source)
   // eslint-disable-next-line @typescript-eslint/promise-function-async
-  return reqPromise.then(({ url, type }: { url: string, type: LX.Quality }) => {
+  return reqPromise.then(async({ url, type }: { url: string, type: LX.Quality }) => {
+    await validateUrl?.(url)
     return { musicInfo, url, quality: type, isFromCache: false }
     // eslint-disable-next-line @typescript-eslint/promise-function-async
   }).catch((err: any) => {
-    if (err.message == requestMsg.tooManyRequests) throw err
+    if (err.name === 'AbortError' || err.message === requestMsg.cancelRequest || err.message == requestMsg.tooManyRequests) throw err
     console.log(err)
-    return getOnlineOtherSourceMusicUrl({ musicInfos, quality, onToggleSource, isRefresh, retryedSource })
+    return getOnlineOtherSourceMusicUrl({ musicInfos, quality, onToggleSource, isRefresh, retryedSource, validateUrl })
   })
 }
 
 /**
  * 获取在线音乐URL
  */
-export const handleGetOnlineMusicUrl = async({ musicInfo, quality, onToggleSource, isRefresh, allowToggleSource }: {
+export const handleGetOnlineMusicUrl = async({ musicInfo, quality, onToggleSource, isRefresh, allowToggleSource, validateUrl }: {
   musicInfo: LX.Music.MusicInfoOnline
   quality?: LX.Quality
   isRefresh: boolean
   allowToggleSource: boolean
   onToggleSource: (musicInfo?: LX.Music.MusicInfoOnline) => void
+  validateUrl?: (url: string) => Promise<void>
 }): Promise<{
   url: string
   musicInfo: LX.Music.MusicInfoOnline
@@ -310,11 +320,12 @@ export const handleGetOnlineMusicUrl = async({ musicInfo, quality, onToggleSourc
   } catch (err: any) {
     reqPromise = Promise.reject(err)
   }
-  return reqPromise.then(({ url, type }: { url: string, type: LX.Quality }) => {
+  return reqPromise.then(async({ url, type }: { url: string, type: LX.Quality }) => {
+    await validateUrl?.(url)
     return { musicInfo, url, quality: type, isFromCache: false }
   }).catch(async(err: any) => {
     console.log(err)
-    if (!allowToggleSource || err.message == requestMsg.tooManyRequests) throw err
+    if (!allowToggleSource || err.name === 'AbortError' || err.message === requestMsg.cancelRequest || err.message == requestMsg.tooManyRequests) throw err
     onToggleSource()
     // eslint-disable-next-line @typescript-eslint/promise-function-async
     return getOtherSource(musicInfo).then(otherSource => {
@@ -326,6 +337,7 @@ export const handleGetOnlineMusicUrl = async({ musicInfo, quality, onToggleSourc
           quality,
           isRefresh,
           retryedSource: [musicInfo.source],
+          validateUrl,
         })
       }
       throw err

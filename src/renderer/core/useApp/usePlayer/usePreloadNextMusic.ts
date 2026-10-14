@@ -2,6 +2,10 @@ import { onBeforeUnmount, watch } from '@common/utils/vueTools'
 import { onTimeupdate, getCurrentTime } from '@renderer/plugins/player'
 import { playProgress } from '@renderer/store/player/playProgress'
 import { musicInfo } from '@renderer/store/player/state'
+import { radioPlayback } from '@renderer/core/radio/playback'
+import { validateRadioAudio } from '@renderer/core/radio/resource'
+import { tempListMeta } from '@renderer/store/list/state'
+import { LIST_IDS } from '@common/constants'
 // import { getList } from '@renderer/store/utils'
 import { getNextPlayMusicInfo, resetRandomNextMusicInfo } from '@renderer/core/player'
 import { getMusicUrl } from '@renderer/core/music'
@@ -63,12 +67,14 @@ const preloadNextMusicUrl = async(curTime: number) => {
   const info = await getNextPlayMusicInfo()
   if (info) {
     preloadMusicInfo.info = info
-    const url = await getMusicUrl({ musicInfo: info.musicInfo }).catch(() => '')
+    const validateUrl = radioPlayback.enabled && info.listId === LIST_IDS.TEMP &&
+      tempListMeta.id?.startsWith('mcp_radio_') === true ? validateRadioAudio : undefined
+    const url = await getMusicUrl({ musicInfo: info.musicInfo, validateUrl }).catch(() => '')
     if (url) {
       console.log('preload url', url)
       const result = await checkMusicUrl(url)
       if (!result) {
-        const url = await getMusicUrl({ musicInfo: info.musicInfo, isRefresh: true }).catch(() => '')
+        const url = await getMusicUrl({ musicInfo: info.musicInfo, isRefresh: true, validateUrl }).catch(() => '')
         void checkMusicUrl(url)
         console.log('preload url refresh', url)
       }

@@ -16,6 +16,7 @@ import usePlayer from './usePlayer'
 import useSettingSync from './useSettingSync'
 import { useRouter } from '@common/utils/vueRouter'
 import handleListAutoUpdate from './listAutoUpdate'
+import { isMiniRadioWindow } from '@renderer/core/radio/mode'
 
 
 export default () => {
@@ -23,7 +24,7 @@ export default () => {
   proxy.enable = appSetting['network.proxy.enable']
   proxy.host = appSetting['network.proxy.host']
   proxy.port = appSetting['network.proxy.port']
-  isFullscreen.value = appSetting['common.startInFullscreen']
+  isFullscreen.value = !isMiniRadioWindow && appSetting['common.startInFullscreen']
   themeId.value = appSetting['theme.id']
 
   const router = useRouter()
@@ -58,9 +59,11 @@ export default () => {
       }
     }
 
-    void getViewPrevState().then(state => {
-      void router.push({ path: state.url, query: state.query })
-    })
+    if (!isMiniRadioWindow) {
+      void getViewPrevState().then(state => {
+        void router.push({ path: state.url, query: state.query })
+      })
+    }
 
     // 初始化我的列表、下载列表等数据
     void initData().then(() => {

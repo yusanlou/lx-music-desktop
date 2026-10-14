@@ -207,11 +207,31 @@ const createMcpServer = (): McpServer => {
         singer: z.string().optional().describe('歌手名，提供可提高匹配准确度'),
       })).describe('要播放的歌曲列表，按顺序连播'),
       source: z.enum(['all', 'kw', 'kg', 'tx', 'wy', 'mg']).optional().describe('音源，默认 all'),
+      opening: z.object({
+        text: z.string().min(1).max(200),
+        song: z.object({ name: z.string(), singer: z.string().optional() }),
+        audioBase64: z.string().max(4 * 1024 * 1024).regex(/^[A-Za-z0-9+/]*={0,2}$/).optional(),
+        musicCue: z.object({ afterText: z.string().max(200) }).optional(),
+      }).optional().describe('已生成的首曲开场语音，绑定首曲，准备完成后再播放'),
+    },
+  }, async({ songs, source, opening }) => {
+    // Allow first-song media checks and fallback sources in addition to searches.
+    const timeout = (opening ? 90000 : 30000) + (songs?.length ?? 0) * 6000
+    const result = await invokeRenderer('play_songs', { songs, source: source ?? 'all', opening }, timeout)
+    return textResult(result)
+  })
+  server.registerTool('append_songs', {
+    description: '追加一组歌曲到当前电台队列末尾，不打断正在播放的歌（无限电台续播）。会对队列已有的歌去重。与 play_songs 区别：play_songs 覆盖列表从头播，append_songs 只往后加',
+    inputSchema: {
+      songs: z.array(z.object({
+        name: z.string().describe('歌曲名'),
+        singer: z.string().optional().describe('歌手名，提供可提高匹配准确度'),
+      })).describe('要追加的歌曲列表'),
+      source: z.enum(['all', 'kw', 'kg', 'tx', 'wy', 'mg']).optional().describe('音源，默认 all'),
     },
   }, async({ songs, source }) => {
-    // 逐首搜索多首歌耗时较长，按歌曲数动态放宽超时（每首约 6 秒 + 基础 30 秒）
     const timeout = 30000 + (songs?.length ?? 0) * 6000
-    const result = await invokeRenderer('play_songs', { songs, source: source ?? 'all' }, timeout)
+    const result = await invokeRenderer('append_songs', { songs, source: source ?? 'all' }, timeout)
     return textResult(result)
   })
   server.registerTool('play_artist', {
@@ -240,6 +260,53 @@ const createMcpServer = (): McpServer => {
     const info = await invokeRenderer('get_current_music')
     return textResult(info)
   })
+
+  server.registerTool('set_radio_mode', {
+    description: '启停电台预准备与歌曲开场播报；停用时清除缓存并继续当前歌曲',
+    inputSchema: {
+      enabled: z.boolean(),
+      voiceGain: z.number().min(0.5).max(3).optional(),
+      interjectionMusicGain: z.number().min(0.5).max(2).optional(),
+      interjectionVoiceGain: z.number().min(0.5).max(1).optional(),
+    },
+  }, async params => textResult(await invokeRenderer('set_radio_mode', params)))
+  server.registerTool('get_radio_state', {
+    description: '获取电台会话、实际下一首歌曲、已准备解说和队列剩余情况',
+  }, async() => textResult(await invokeRenderer('get_radio_state')))
+  server.registerTool('prepare_radio_intro', {
+    description: '缓存下一首的解说与 MP3；仅在会话和当前歌曲仍匹配时接受，歌曲切换时自动播报',
+    inputSchema: {
+      sessionId: z.number().int(),
+      anchor: z.string(),
+      songId: z.string(),
+      source: z.string(),
+      text: z.string().min(1).max(200),
+      audioBase64: z.string().max(4 * 1024 * 1024).regex(/^[A-Za-z0-9+/]*={0,2}$/).optional(),
+      musicCue: z.object({
+        afterText: z.string().max(200),
+        volume: z.number().optional(),
+        fadeInSeconds: z.number().optional(),
+        restoreSeconds: z.number().optional(),
+      }).optional(),
+    },
+  }, async params => textResult(await invokeRenderer('prepare_radio_intro', params, 10000)))
+
+  server.registerTool('plan_radio_interjection', {
+    description: '为当前歌曲缓存一次按歌曲秒数执行的插播；atSeconds=null 表示不插播。插播前压低音乐、结束后恢复；过期或剩余时长不足时拒绝。',
+    inputSchema: {
+      sessionId: z.number().int(),
+      anchor: z.string(),
+      songId: z.string(),
+      source: z.string(),
+      atSeconds: z.number().min(0).nullable(),
+      text: z.string().max(120).optional(),
+      audioBase64: z.string().max(4 * 1024 * 1024).regex(/^[A-Za-z0-9+/]*={0,2}$/).optional(),
+      volume: z.number().min(0).max(0.5).default(0.16),
+      fadeDownSeconds: z.number().min(0.1).max(5).default(0.8),
+      restoreSeconds: z.number().min(0.1).max(10).default(2),
+      reason: z.string().max(300).optional(),
+    },
+  }, async params => textResult(await invokeRenderer('plan_radio_interjection', params, 10000)))
 
   // ---- 换源（桥接到渲染进程）----
   server.registerTool('get_other_source', {
