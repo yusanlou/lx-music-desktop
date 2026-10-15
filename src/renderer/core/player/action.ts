@@ -36,6 +36,11 @@ const cancelResourceProbe = () => {
 }
 const isRadioQueue = () => radioPlayback.enabled && playMusicInfo.listId === LIST_IDS.TEMP &&
   !playMusicInfo.isTempPlay && tempListMeta.id?.startsWith('mcp_radio_') === true
+const requestedRadioNext = (): LX.Player.PlayMusicInfo | null => {
+  if (!isRadioQueue() || !radioPlayback.requestedNextKey) return null
+  const target = getList(LIST_IDS.TEMP).find(song => songKey('progress' in song ? song.metadata.musicInfo : song) === radioPlayback.requestedNextKey)
+  return target ? { musicInfo: target, listId: LIST_IDS.TEMP, isTempPlay: false } : null
+}
 const createGettingUrlId = (musicInfo: LX.Music.MusicInfo | LX.Download.ListItem) => {
   const tInfo = 'progress' in musicInfo ? musicInfo.metadata.musicInfo.meta.toggleMusicInfo : musicInfo.meta.toggleMusicInfo
   return `${musicInfo.id}_${tInfo?.id ?? ''}`
@@ -363,6 +368,8 @@ export const resetRandomNextMusicInfo = () => {
 }
 
 export const getNextPlayMusicInfo = async(): Promise<LX.Player.PlayMusicInfo | null> => {
+  const requested = requestedRadioNext()
+  if (requested) return requested
   if (tempPlayList.length) { // 如果稍后播放列表存在歌曲则直接播放改列表的歌曲
     const playMusicInfo = tempPlayList[0]
     return playMusicInfo
@@ -370,14 +377,14 @@ export const getNextPlayMusicInfo = async(): Promise<LX.Player.PlayMusicInfo | n
 
   if (playMusicInfo.musicInfo == null) return null
 
-  if (randomNextMusicInfo.info) return randomNextMusicInfo.info
+  if (randomNextMusicInfo.info && !isRadioQueue()) return randomNextMusicInfo.info
 
   // console.log(playInfo.playerListId)
   const currentListId = playInfo.playerListId
   if (!currentListId) return null
   const currentList = getList(currentListId)
 
-  if (playedList.length) { // 移除已播放列表内不存在原列表的歌曲
+  if (playedList.length && !isRadioQueue()) { // 普通播放保留历史前进，电台按队列播放
     let currentId: string
     if (playMusicInfo.isTempPlay) {
       const musicInfo = currentList[playInfo.playerPlayIndex]
@@ -413,7 +420,7 @@ export const getNextPlayMusicInfo = async(): Promise<LX.Player.PlayMusicInfo | n
   if (playerIndex == -1 && filteredList.length) playerIndex = 0
   let nextIndex = playerIndex
 
-  let togglePlayMethod = appSetting['player.togglePlayMethod']
+  let togglePlayMethod = isRadioQueue() ? 'listLoop' : appSetting['player.togglePlayMethod']
   switch (togglePlayMethod) {
     case 'listLoop':
       nextIndex = playerIndex === filteredList.length - 1 ? 0 : playerIndex + 1
@@ -469,8 +476,13 @@ const skipUnavailableRadioSong = (musicInfo: LX.Music.MusicInfo | LX.Download.Li
  * @returns
  */
 export const playNext = async(isAutoToggle = false): Promise<void> => {
+  const requested = requestedRadioNext()
   cancelResourceProbe()
   radioPlayback.songChanged()
+  if (requested) {
+    handlePlayNext(requested)
+    return
+  }
   console.log('skip next', isAutoToggle)
   if (tempPlayList.length) { // 如果稍后播放列表存在歌曲则直接播放改列表的歌曲
     const playMusicInfo = tempPlayList[0]
@@ -495,7 +507,7 @@ export const playNext = async(isAutoToggle = false): Promise<void> => {
   }
   const currentList = getList(currentListId)
 
-  if (playedList.length) { // 移除已播放列表内不存在原列表的歌曲
+  if (playedList.length && !isRadioQueue()) { // 普通播放保留历史前进，电台按队列播放
     let currentId: string
     if (playMusicInfo.isTempPlay) {
       const musicInfo = currentList[playInfo.playerPlayIndex]
@@ -521,7 +533,7 @@ export const playNext = async(isAutoToggle = false): Promise<void> => {
       return
     }
   }
-  if (randomNextMusicInfo.info) {
+  if (randomNextMusicInfo.info && !isRadioQueue()) {
     handlePlayNext(randomNextMusicInfo.info)
     return
   }
@@ -543,7 +555,7 @@ export const playNext = async(isAutoToggle = false): Promise<void> => {
   if (playerIndex == -1 && filteredList.length) playerIndex = 0
   let nextIndex = playerIndex
 
-  let togglePlayMethod = appSetting['player.togglePlayMethod']
+  let togglePlayMethod = isRadioQueue() ? 'listLoop' : appSetting['player.togglePlayMethod']
   if (!isAutoToggle) {
     switch (togglePlayMethod) {
       case 'list':

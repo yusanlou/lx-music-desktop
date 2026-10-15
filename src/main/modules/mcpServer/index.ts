@@ -236,6 +236,19 @@ const createMcpServer = (): McpServer => {
     const result = await invokeRenderer('append_songs', { songs, source: source ?? 'all' }, timeout)
     return textResult(result)
   })
+  server.registerTool('request_radio_next_song', {
+    description: '点播一首歌为下一首，静默验证完整音频并保留当前播放和其他队列。',
+    inputSchema: {
+      name: z.string().min(1).max(100),
+      singer: z.string().max(100).optional(),
+      source: z.enum(['all', 'kw', 'kg', 'tx', 'wy', 'mg']).optional(),
+      requestId: z.string().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/),
+    },
+  }, async params => textResult(await invokeRenderer('request_radio_next_song', params, 85000)))
+  server.registerTool('cancel_radio_request', {
+    description: '取消请求对应的点歌查源和聊天语音，音乐与自动主持继续。',
+    inputSchema: { requestId: z.string().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/) },
+  }, async params => textResult(await invokeRenderer('cancel_radio_request', params, 5000)))
   server.registerTool('play_artist', {
     description: '搜索并播放指定歌手的全部歌曲',
     inputSchema: {
@@ -282,6 +295,16 @@ const createMcpServer = (): McpServer => {
       audioBase64: z.string().min(1).max(1024 * 1024).regex(/^[A-Za-z0-9+/]*={0,2}$/),
     },
   }, async params => textResult(await invokeRenderer('announce_radio_progress', params, 7000)))
+  server.registerTool('speak_radio_dialogue', {
+    description: '播放一段听众聊天回复；与正式主持互斥，平滑压低并恢复音乐，不占自动插播次数。',
+    inputSchema: {
+      sessionId: z.number().int(),
+      requestId: z.string().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/),
+      part: z.number().int().min(0).max(20),
+      text: z.string().min(1).max(200),
+      audioBase64: z.string().min(1).max(4 * 1024 * 1024),
+    },
+  }, async params => textResult(await invokeRenderer('speak_radio_dialogue', params, 7000)))
   server.registerTool('remove_radio_song', {
     description: '纠正电台选曲：从临时队列移除一首尚未播放的歌，保留当前播放。校验会话和播放位置，过期请求拒绝。',
     inputSchema: {

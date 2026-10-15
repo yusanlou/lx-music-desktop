@@ -12,7 +12,7 @@
     <section class="radio-display" aria-label="当前歌曲">
       <div class="radio-display-label"><span>正在收听</span><span>{{ isPlay ? '播放中' : musicInfo.id ? '已暂停' : '待开播' }}</span></div>
       <h1 :title="musicInfo.name">{{ musicInfo.name || '今晚，听点什么？' }}</h1>
-      <p class="radio-singer" :title="musicInfo.singer">{{ musicInfo.singer || '在启动终端输入你想听的节目主题' }}</p>
+      <p class="radio-singer" :title="musicInfo.singer">{{ musicInfo.singer || '在下方输入这一期想听什么' }}</p>
       <div class="radio-tuner" role="progressbar" aria-label="歌曲播放进度" :aria-valuenow="Math.round(progress * 100)" aria-valuemin="0" aria-valuemax="100">
         <div class="radio-needle" :style="{ left: `${progress * 100}%` }" />
       </div>
@@ -29,6 +29,7 @@
       <div class="radio-host-heading"><span class="radio-lamp" :class="{ active: host.phase === 'speaking' }" /><span>{{ hostLabel }}</span></div>
       <p :title="host.introduction || helperText">{{ host.introduction || helperText }}</p>
     </section>
+    <RadioChat :paused="!isPlay" :song="musicInfo" @expand="resizeChat" />
     <footer class="radio-footer"><span>留一点时间给音乐</span><span v-if="status === 'error'" role="alert">音源暂时不可用</span><span v-else>{{ host.enabled ? '主持人在线' : '等待主持人上线' }}</span></footer>
     <HostSettings v-if="hostSettingsOpen" @close="hostSettingsOpen = false" @player-settings="$emit('settings')" />
   </main>
@@ -36,16 +37,18 @@
 
 <script setup>
 import HostSettings from './HostSettings.vue'
+import RadioChat from './RadioChat.vue'
 import { getHostSettings } from '@renderer/core/radio/hostSettings'
 import { computed, onBeforeUnmount, ref } from '@common/utils/vueTools'
 import { musicInfo, isPlay, status } from '@renderer/store/player/state'
 import { playProgress } from '@renderer/store/player/playProgress'
 import { volume, isMute, setMute, setVolume } from '@renderer/store/player/volume'
-import { minWindow, quitApp } from '@renderer/utils/ipc'
+import { minWindow, quitApp, setWindowSize } from '@renderer/utils/ipc'
 import { radioPlayback } from '@renderer/core/radio/playback'
 
 defineEmits(['settings'])
 const hostSettingsOpen = ref(false)
+const resizeChat = (expanded) => { setWindowSize(390, expanded ? 700 : 520) }
 void getHostSettings().catch(() => {})
 const host = ref(radioPlayback.status())
 const timer = setInterval(() => { host.value = radioPlayback.status() }, 250)
@@ -53,6 +56,7 @@ onBeforeUnmount(() => { clearInterval(timer) })
 const progress = computed(() => Math.max(0, Math.min(1, playProgress.progress)))
 const hostLabel = computed(() => {
   if (host.value.phase === 'paused') return '主持人口播已暂停'
+  if (host.value.phase === 'speaking' && host.value.speechKind === 'dialogue') return '主持人在回复你'
   if (host.value.phase === 'speaking') return host.value.speechKind === 'intro' ? '主持人在介绍这首歌' : '主持人在说话'
   if (host.value.phase === 'ducking') return '主持人准备开口'
   if (host.value.phase === 'restoring') return '回到音乐时间'

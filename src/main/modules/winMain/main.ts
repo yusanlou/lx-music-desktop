@@ -78,7 +78,7 @@ const winEvent = () => {
 
 export const createWindow = () => {
   closeWindow()
-  const windowSizeInfo = isMiniRadio ? { width: 390, height: 440 } : getWindowSizeInfo(global.lx.appSetting['common.windowSizeId'])
+  const windowSizeInfo = isMiniRadio ? { width: 390, height: 520 } : getWindowSizeInfo(global.lx.appSetting['common.windowSizeId'])
   const disableTransparent = isMiniRadio || global.envParams.cmdParams.dt
 
   const { shouldUseDarkColors, theme } = global.lx.theme

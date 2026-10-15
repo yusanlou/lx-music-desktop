@@ -5,8 +5,27 @@ interface QueueState {
   anchor: string
   current: Song | null
   songs: Song[]
+  listenerRequestedKeys?: string[]
 }
 interface Removal { sessionId: number, anchor: string, songId: string, source: string }
+
+let queueMutation: Promise<any> = Promise.resolve()
+export async function mutateRadioQueue<T>(operation: () => Promise<T>): Promise<T> {
+  const result = queueMutation.catch(() => {}).then(operation)
+  queueMutation = result
+  return result
+}
+
+/** Preserve the playing entry and all other songs; move a request directly after it. */
+export function insertRequestedNext<T extends Song>(songs: T[], current: Song, target: T): T[] {
+  const same = (a: Song, b: Song) => a.id === b.id && a.source === b.source
+  if (same(current, target)) return [...songs]
+  const remaining = songs.filter(song => !same(song, target))
+  const index = remaining.findIndex(song => same(song, current))
+  if (index < 0) throw new Error('radio_current_not_in_queue')
+  remaining.splice(index + 1, 0, target)
+  return remaining
+}
 
 /** A one-song loop has no distinct next recording to introduce. */
 export function selectDistinctNextSong<T extends Song>(current: Song | null, next: T | null): T | null {
@@ -21,6 +40,7 @@ export function selectQueuedRemoval(state: QueueState, request: Removal) {
   const current = state.songs.findIndex(song => song.id === state.current!.id && song.source === state.current!.source)
   const target = state.songs.findIndex(song => song.id === request.songId && song.source === request.source)
   if (target < 0) return { allowed: false as const, reason: 'not_in_queue' }
+  if (state.listenerRequestedKeys?.includes(`${request.source}:${request.songId}`)) return { allowed: false as const, reason: 'listener_requested' }
   if (current < 0 || target <= current) return { allowed: false as const, reason: 'not_future_song' }
   // The underlying list API removes by id, so ambiguous ids are unsafe.
   if (state.songs.filter(song => song.id === state.songs[target].id).length !== 1) {

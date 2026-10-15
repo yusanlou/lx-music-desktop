@@ -38,6 +38,10 @@ test('an unavailable song or a different source does not remove another entry', 
   assert.equal(selectQueuedRemoval(state, { ...request, source: 'wy' }).reason, 'not_in_queue')
   assert.equal(selectQueuedRemoval(state, { ...request, songId: 'unknown' }).reason, 'not_in_queue')
 })
+
+test('automatic theme correction cannot delete an explicit listener request', () => {
+  assert.equal(selectQueuedRemoval({ ...state, listenerRequestedKeys: ['kg:future'] }, request).reason, 'listener_requested')
+})
 test('ids shared with a different source are rejected because list removal uses only ids', () => {
   const duplicated = { ...state, songs: [...songs, { id: 'current', source: 'wy' }] }
   assert.equal(selectQueuedRemoval(duplicated, { ...request, songId: 'current', source: 'wy' }).reason, 'ambiguous_id')

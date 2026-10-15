@@ -240,7 +240,7 @@ def launch(miniagent, check=False, player_mode='full', verbose=False, spoken_pro
             else:
                 say('主持语音已关闭，使用音乐与文字串词。')
 
-            say('\n服务已就绪。请输入节目主题；输入 exit 或按 Ctrl+C 收工。\n')
+            say('\n服务已就绪。终端或迷你电台均可输入；exit 收工，Ctrl+C 取消当前聊天回答。\n')
             host_env = dict(os.environ, MINIAGENT_VERBOSE='1' if verbose else '0',
                             MINIAGENT_SPOKEN_PROGRESS='1' if spoken_progress else '0')
             host_command = [str(python), '-u', '-m', 'miniagent', '--radio']

@@ -299,7 +299,10 @@ function actionFixture(t, { allShort = false, hold = false } = {}) {
     '@renderer/store/player/action': {
       getList: () => list,
       setPlayListId: id => { state.playInfo.playerListId = id },
-      setPlayMusicInfo: (listId, song) => { Object.assign(state.playMusicInfo, { listId, musicInfo: song, isTempPlay: false }) },
+      setPlayMusicInfo: (listId, song) => {
+        Object.assign(state.playMusicInfo, { listId, musicInfo: song, isTempPlay: false })
+        state.playInfo.playIndex = state.playInfo.playerPlayIndex = list.indexOf(song)
+      },
       clearPlayedList() {}, clearTempPlayeList() {}, setMusicInfo() {}, setAllStatus: message => order.push(message),
     },
     '@renderer/store/setting': { appSetting: { 'player.autoSkipOnError': false, 'player.togglePlayMethod': 'singleLoop' } },
@@ -390,6 +393,31 @@ test('ordinary player mode still permits a legitimate short clip', async t => {
   await flush()
   assert.deepEqual(f.resources, ['https://test.invalid/bad-first'])
   assert.equal(f.probes.length, 0)
+})
+
+test('a requested next track advances naturally even when the saved mode is single-loop', async t => {
+  const f = actionFixture(t)
+  f.action.playList('temp', 1)
+  await flush()
+  const requested = { ...f.list[1], id: 'requested-next', name: '点播歌' }
+  f.list.push(requested)
+  f.playback.requestedNextKey = 'kg:requested-next'
+  assert.equal((await f.action.getNextPlayMusicInfo()).musicInfo.id, 'requested-next')
+  await f.action.playNext(true)
+  await flush()
+  assert.equal(f.playback.requestedNextKey, null)
+  assert.equal(f.resources.at(-1), 'https://test.invalid/requested-next')
+})
+
+test('radio continues the automatic queue after a requested song in a saved single-loop mode', async t => {
+  const f = actionFixture(t)
+  f.action.playList('temp', 1)
+  await flush()
+  f.list.push({ ...f.list[1], id: 'auto-next', name: '自动续播' })
+  assert.equal((await f.action.getNextPlayMusicInfo()).musicInfo.id, 'auto-next')
+  await f.action.playNext(true)
+  await flush()
+  assert.equal(f.resources.at(-1), 'https://test.invalid/auto-next')
 })
 
 test('manual skip cancels the previous metadata check and a late event cannot reject or play the new song', async t => {

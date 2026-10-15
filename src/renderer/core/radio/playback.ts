@@ -18,7 +18,8 @@ interface Speech {
   key: string
   text: string
   audio: HTMLAudioElement | null
-  kind: 'intro' | 'interjection' | 'progress'
+  kind: 'intro' | 'interjection' | 'progress' | 'dialogue'
+  requestId?: string
   cueFraction: number
   plan?: InterjectionPlan
   started: boolean
@@ -60,10 +61,17 @@ export class RadioPlayback {
   private fadeTimer: ReturnType<typeof setInterval> | null = null
   private fadeTickAt = 0
   private lastProgressSpeechAt = -Infinity
+  requestedNextKey: string | null = null
+  private readonly listenerRequests = new Set<string>()
+  private readonly spokenDialogue = new Set<string>()
+  private dialogueResult: { requestId: string, result: string } | null = null
 
   constructor(private readonly createAudio: (url: string) => HTMLAudioElement, private readonly now: () => number = () => performance.now()) {}
 
   configure(enabled: boolean, voiceGain?: number, interjectionMusicGain?: number, interjectionVoiceGain?: number) {
+    this.requestedNextKey = null
+    this.listenerRequests.clear()
+    this.spokenDialogue.clear()
     const continueSong = this.continueSong
     const wasPaused = this.paused
     this.cancel()
@@ -108,7 +116,7 @@ export class RadioPlayback {
     for (const speech of this.prepared.values()) this.applyVoiceVolume(speech)
     if (this.active) this.applyVoiceVolume(this.active)
     if (this.pendingInterjection) this.applyVoiceVolume(this.pendingInterjection)
-    if (this.active?.kind === 'interjection' && this.active.started) this.fadeTo(Math.min(0.5, this.active.plan!.volume * this.interjectionMusicGain), 0.3)
+    if ((this.active?.kind === 'interjection' || this.active?.kind === 'dialogue') && this.active.started) this.fadeTo(Math.min(0.5, this.active.plan!.volume * this.interjectionMusicGain), 0.3)
   }
 
   status() {
@@ -120,7 +128,10 @@ export class RadioPlayback {
       positionId: this.positionId,
       phase: (speaking ?? this.fadeTimer) ? (this.paused ? 'paused' : speaking ? (speaking.started ? 'speaking' : 'ducking') : 'restoring') : 'idle',
       speechKind: speaking?.kind ?? (this.fadeTimer ? 'interjection' : null),
+      dialogueRequestId: speaking?.kind === 'dialogue' ? speaking.requestId : null,
+      dialogueResult: this.dialogueResult,
       preparedKeys: [...this.prepared.keys()],
+      listenerRequestedKeys: [...this.listenerRequests],
       rejectedMusic: [...this.rejectedMusic].map(([key, reason]) => ({ key, reason })),
       introduction: speaking?.text ?? '',
       musicStarted: this.musicStarted,
@@ -211,11 +222,64 @@ export class RadioPlayback {
     this.setGain(1)
   }
 
+  /** Listener replies share the voice channel, never the music transport or cue quotas. */
+  async speakDialogue(sessionId: number, requestId: string, part: number, text: string, audioUrl: string, isValid: () => boolean) {
+    const key = `${requestId}:${part}`
+    const valid = () => this.enabled && sessionId === this.sessionId && isValid()
+    const available = (duration = 0) => !this.paused && !this.active && !this.fadeTimer &&
+      (!this.pendingInterjection?.plan || this.pendingInterjection.plan.atSeconds - this.songProgress > duration + 3)
+    if (!valid()) return { played: false, reason: 'stale' }
+    if (this.spokenDialogue.has(key)) return { played: true, duplicate: true }
+    if (!available()) return { played: false, reason: 'busy' }
+    const positionId = this.positionId
+    const speech: Speech = {
+      key,
+      requestId,
+      text,
+      audio: this.createAudio(audioUrl),
+      kind: 'dialogue',
+      cueFraction: 0,
+      started: false,
+      plan: { atSeconds: 0, volume: 0.22, fadeDownSeconds: 0.6, restoreSeconds: 1.5 },
+    }
+    if (!await this.load(speech)) return { played: false, reason: 'audio_not_ready' }
+    const duration = speech.audio!.duration
+    if (!Number.isFinite(duration) || duration <= 0 || duration > 90) {
+      this.dispose(speech)
+      return { played: false, reason: 'invalid_audio' }
+    }
+    if (!valid() || positionId !== this.positionId || !available(duration)) {
+      this.dispose(speech)
+      return { played: false, reason: valid() ? 'busy' : 'stale' }
+    }
+    // A concurrent retry can finish loading after the original audio already ended.
+    if (this.spokenDialogue.has(key)) { this.dispose(speech); return { played: true, duplicate: true } }
+    this.spokenDialogue.add(key)
+    if (this.spokenDialogue.size > 256) this.spokenDialogue.delete(this.spokenDialogue.values().next().value!)
+    this.active = speech
+    this.dialogueResult = { requestId, result: 'playing' }
+    this.bindCompletion(speech)
+    this.fadeTo(Math.min(0.5, speech.plan!.volume * this.interjectionMusicGain), speech.plan!.fadeDownSeconds, () => {
+      if (this.active === speech && !this.paused) this.startVoice(speech)
+    })
+    return { played: true, audioSeconds: duration }
+  }
+
+  cancelDialogue(requestId: string) {
+    if (this.active?.kind !== 'dialogue' || this.active.requestId !== requestId) return
+    const speech = this.active
+    this.active = null
+    this.dialogueResult = { requestId, result: 'cancelled' }
+    this.clearTimer()
+    this.dispose(speech)
+    this.fadeTo(1, speech.plan!.restoreSeconds)
+  }
+
   async planInterjection(sessionId: number, key: string, text: string, audioUrl: string | undefined,
     plan: InterjectionPlan | null, isValid: () => boolean, clock: () => { progress: number, duration: number }, reason = '') {
     if (!this.enabled || sessionId !== this.sessionId || !isValid()) return { prepared: false, reason: 'stale' }
     this.cancelProgressSpeech()
-    if (this.active?.kind === 'interjection') return { prepared: false, reason: 'already_speaking' }
+    if (this.active?.kind === 'interjection' || this.active?.kind === 'dialogue') return { prepared: false, reason: 'already_speaking' }
     const request = ++this.interjectionRequest
     if (!plan) {
       if (this.pendingInterjection) this.dispose(this.pendingInterjection)
@@ -286,8 +350,14 @@ export class RadioPlayback {
   }
 
   isMusicRejected(key: string) { return this.rejectedMusic.has(key) }
+  queueListenerRequest(key: string) {
+    this.requestedNextKey = key
+    this.listenerRequests.add(key)
+    this.rejectedMusic.delete(key)
+  }
 
   beforeSong(key: string, continueSong: () => void): boolean {
+    this.listenerRequests.delete(key)
     const wasPaused = this.paused
     this.cancel()
     this.paused = wasPaused
@@ -347,10 +417,11 @@ export class RadioPlayback {
     return () => { if (this.gainHandler === handler) this.gainHandler = null }
   }
 
-  get allowsMusic() { return !this.active || this.musicStarted }
+  get allowsMusic() { return !this.active || this.active.kind !== 'intro' || this.musicStarted }
   get isPaused() { return this.paused }
 
   songChanged() {
+    this.requestedNextKey = null
     this.positionId++
     this.cancel()
     this.interjectionDecided = false
@@ -366,6 +437,7 @@ export class RadioPlayback {
     this.clearFade()
     this.interjectionRequest++
     const active = this.active
+    if (active?.kind === 'dialogue') this.dialogueResult = { requestId: active.requestId!, result: 'cancelled' }
     this.active = null
     this.continueSong = null
     this.paused = false
@@ -395,7 +467,7 @@ export class RadioPlayback {
 
   private applyVoiceVolume(speech: Speech) {
     if (!speech.audio) return
-    speech.audio.volume = Math.min(1, this.voiceVolume * this.voiceGain) * (speech.kind === 'interjection' ? this.interjectionVoiceGain : 1)
+    speech.audio.volume = Math.min(1, this.voiceVolume * this.voiceGain) * (speech.kind === 'interjection' || speech.kind === 'dialogue' ? this.interjectionVoiceGain : 1)
     speech.audio.muted = this.voiceMuted
   }
 
@@ -418,8 +490,10 @@ export class RadioPlayback {
         this.lastInterjectionProgress = this.songProgress
       }
       this.fadeTo(1, speech.plan!.restoreSeconds)
-    } else if (speech.kind === 'progress') this.fadeTo(1, speech.plan!.restoreSeconds)
-    else if (!this.musicStarted) this.startMusic()
+    } else if (speech.kind === 'progress' || speech.kind === 'dialogue') {
+      if (speech.kind === 'dialogue') this.dialogueResult = { requestId: speech.requestId!, result: failed ? 'audio_failed' : 'completed' }
+      this.fadeTo(1, speech.plan!.restoreSeconds)
+    } else if (!this.musicStarted) this.startMusic()
   }
 
   private startMusic() {

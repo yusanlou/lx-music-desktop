@@ -4,13 +4,13 @@ import { watch, markRaw } from '@common/utils/vueTools'
 import { deduplicationList } from '@renderer/utils'
 import { searchRadioMusic as searchMusic } from '@renderer/core/radio/search'
 import { playMusicInfo, playInfo, isPlay } from '@renderer/store/player/state'
-import { setTempList, addListMusics, getListMusicsFromCache, removeListMusics } from '@renderer/store/list/action'
+import { setTempList, addListMusics, getListMusicsFromCache, removeListMusics, overwriteListMusics } from '@renderer/store/list/action'
 import { tempListMeta } from '@renderer/store/list/state'
-import { playArtist } from '@renderer/store/player/action'
+import { playArtist, updatePlayIndex } from '@renderer/store/player/action'
 import { playList as corePlayList, setMusicUrl, getNextPlayMusicInfo } from '@renderer/core/player'
 import { radioPlayback, songKey } from '@renderer/core/radio/playback'
 import { miniRadioMode } from '@renderer/core/radio/mode'
-import { selectQueuedRemoval, selectDistinctNextSong } from '@renderer/core/radio/queue'
+import { selectQueuedRemoval, selectDistinctNextSong, insertRequestedNext, mutateRadioQueue } from '@renderer/core/radio/queue'
 import { getHostSettings } from '@renderer/core/radio/hostSettings'
 import { selectRadioSong } from '@renderer/core/radio/matching'
 import type { MusicCue } from '@renderer/core/radio/playback'
@@ -43,7 +43,66 @@ const findRadioSong = async(song: { name: string, singer?: string }, source: LX.
   return selectRadioSong(await searchMusic(keyword, 1, 'all'), song)
 }
 
+const radioRequests = new Map<string, { controller: AbortController, signature: string, result: Promise<any>, at: number }>()
+const cancelledRadioRequests = new Map<string, number>()
+const requestRadioNext = async(params: { name: string, singer?: string, source?: LX.OnlineSource | 'all', requestId: string }) => {
+  const signature = `${params.name}\n${params.singer ?? ''}\n${params.source ?? 'all'}`
+  const previous = radioRequests.get(params.requestId)
+  if (previous) return previous.signature === signature ? previous.result : Promise.resolve({ requested: false, reason: 'request_already_used' })
+  for (const [id, entry] of radioRequests) if (Date.now() - entry.at > 600000) radioRequests.delete(id)
+  for (const [id, at] of cancelledRadioRequests) if (Date.now() - at > 600000) cancelledRadioRequests.delete(id)
+  if (radioRequests.size >= 256) return Promise.resolve({ requested: false, reason: 'busy' })
+  const controller = new AbortController()
+  if (cancelledRadioRequests.has(params.requestId)) controller.abort()
+  const result = (async() => {
+    const capturedSession = radioPlayback.sessionId
+    const queueId = tempListMeta.id
+    const valid = () => !controller.signal.aborted && radioPlayback.enabled && radioPlayback.sessionId === capturedSession &&
+      tempListMeta.id === queueId && playMusicInfo.listId === LIST_IDS.TEMP && !playMusicInfo.isTempPlay && queueId?.startsWith('mcp_radio_')
+    try {
+      if (!valid()) return { requested: false, reason: controller.signal.aborted ? 'cancelled' : 'inactive' }
+      const target = selectRadioSong(getListMusicsFromCache(LIST_IDS.TEMP), params) ?? await findRadioSong(params, params.source ?? 'all')
+      if (!target) return { requested: false, reason: 'no_matching_song' }
+      if (!valid()) return { requested: false, reason: controller.signal.aborted ? 'cancelled' : 'stale' }
+      const current = playMusicInfo.musicInfo ? serializeRadioSong(playMusicInfo.musicInfo) : null
+      if (current && songKey(current) === songKey(target)) return { requested: false, reason: 'already_current', song: serializeRadioSong(target) }
+      await getMusicUrl({
+        musicInfo: target,
+        validateUrl: async url => {
+          if (!valid()) throw new DOMException('Request cancelled or radio changed', 'AbortError')
+          await validateRadioAudio(url, controller.signal, undefined, target.interval)
+        },
+      })
+      return await mutateRadioQueue(async() => {
+        if (!valid()) return { requested: false, reason: controller.signal.aborted ? 'cancelled' : 'stale' }
+        const current = playMusicInfo.musicInfo ? serializeRadioSong(playMusicInfo.musicInfo) : null
+        if (!current) return { requested: false, reason: 'inactive' }
+        const songs = getListMusicsFromCache(LIST_IDS.TEMP)
+        const updated = insertRequestedNext(songs, current, target)
+        await overwriteListMusics({ listId: LIST_IDS.TEMP, musicInfos: updated })
+        // Updating the list keeps the current audio and its playback position.
+        updatePlayIndex()
+        if (radioPlayback.sessionId !== capturedSession || tempListMeta.id !== queueId) return { requested: false, reason: 'stale', committed: true }
+        radioPlayback.queueListenerRequest(songKey(target))
+        return { requested: true, song: serializeRadioSong(target), after: current.name, queueSize: updated.length }
+      })
+    } catch (error: any) {
+      return { requested: false, reason: controller.signal.aborted ? 'cancelled' : error.name === 'AbortError' ? 'stale' : 'audio_or_search_unavailable' }
+    }
+  })()
+  radioRequests.set(params.requestId, { controller, signature, result, at: Date.now() })
+  return result
+}
+
 const mcpMethodMap: Record<string, (params: any) => Promise<any> | any> = {
+  request_radio_next_song: requestRadioNext,
+  cancel_radio_request({ requestId }: { requestId: string }) {
+    if (cancelledRadioRequests.size >= 256) cancelledRadioRequests.delete(cancelledRadioRequests.keys().next().value!)
+    cancelledRadioRequests.set(requestId, Date.now())
+    radioRequests.get(requestId)?.controller.abort()
+    radioPlayback.cancelDialogue(requestId)
+    return { cancelled: true }
+  },
   /**
    * 搜索歌曲
    * @param params.keyword 关键词
@@ -204,17 +263,20 @@ const mcpMethodMap: Record<string, (params: any) => Promise<any> | any> = {
     }
     const musicList = deduplicationList(matched) as LX.Music.MusicInfoOnline[]
     if (!musicList.length) return { appended: 0, queueSize: existing.length, skipped, failed }
-    if (queueId !== tempListMeta.id) return { appended: 0, reason: 'stale', skipped, failed }
-    // 追加到 TEMP 列表底部，当前播放不受影响
-    await addListMusics(LIST_IDS.TEMP, musicList, 'bottom')
-    const newSize = (getListMusicsFromCache(LIST_IDS.TEMP) ?? []).length
-    return {
-      appended: musicList.length,
-      queueSize: newSize,
-      first: { name: musicList[0].name, singer: musicList[0].singer },
-      skipped,
-      failed,
-    }
+    return await mutateRadioQueue(async() => {
+      if (queueId !== tempListMeta.id) return { appended: 0, reason: 'stale', skipped, failed }
+      const latest = getListMusicsFromCache(LIST_IDS.TEMP)
+      const keys = new Set(latest.map(m => `${m.name}__${m.singer}`))
+      const additions = musicList.filter(m => !keys.has(`${m.name}__${m.singer}`))
+      await addListMusics(LIST_IDS.TEMP, additions, 'bottom')
+      return {
+        appended: additions.length,
+        queueSize: getListMusicsFromCache(LIST_IDS.TEMP).length,
+        first: additions[0] ? { name: additions[0].name, singer: additions[0].singer } : undefined,
+        skipped,
+        failed,
+      }
+    })
   },
 
   /**
@@ -264,6 +326,17 @@ const mcpMethodMap: Record<string, (params: any) => Promise<any> | any> = {
 
   async announce_radio_progress({ text, audioBase64 }: { text: string, audioBase64: string }) {
     return await radioPlayback.announceProgress(text, `data:audio/mpeg;base64,${audioBase64}`)
+  },
+
+  async speak_radio_dialogue({ sessionId, requestId, part, text, audioBase64 }: {
+    sessionId: number
+    requestId: string
+    part: number
+    text: string
+    audioBase64: string
+  }) {
+    return await radioPlayback.speakDialogue(sessionId, requestId, part, text, `data:audio/mpeg;base64,${audioBase64}`,
+      () => !cancelledRadioRequests.has(requestId))
   },
 
   async remove_radio_song(params: { sessionId: number, anchor: string, songId: string, source: string }) {
@@ -334,7 +407,7 @@ const mcpMethodMap: Record<string, (params: any) => Promise<any> | any> = {
     )
     // Recheck the actual next song after decoding: the queue may have changed.
     if (accepted && !await isValid()) {
-      radioPlayback.configure(radioPlayback.enabled)
+      radioPlayback.forgetPrepared(key)
       return { prepared: false, reason: 'stale' }
     }
     return { prepared: accepted, reason: accepted ? undefined : 'audio_or_cue_invalid', songId, text, hasAudio: !!audioBase64, musicCue }

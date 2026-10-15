@@ -12,13 +12,16 @@ import {
 } from '@main/modules/userApi'
 import { sendEvent } from '@main/modules/winMain/main'
 import { configureRadioSources, resolveRadioSource, getRadioSourcesStatus, observeRadioSourceRequest } from '@main/modules/radioSources'
-import { radioHostSettings } from '@main/modules/radioHost'
+import { radioHostSettings, radioHostConversation } from '@main/modules/radioHost'
 import { type RadioSourceRequest, type RadioSourceResult } from '@main/modules/radioSources/pool'
 import { validateRadioAudioIdentity } from '@main/modules/radioSources/identity'
 
 export default () => {
   mainHandle(WIN_MAIN_RENDERER_EVENT_NAME.radio_host_settings_get, async() => radioHostSettings())
   mainHandle<Record<string, unknown>>(WIN_MAIN_RENDERER_EVENT_NAME.radio_host_settings_save, async({ params }) => radioHostSettings(params))
+  mainHandle<Record<string, any>>(WIN_MAIN_RENDERER_EVENT_NAME.radio_host_chat_state, async({ params }) => radioHostConversation('state', params))
+  mainHandle<Record<string, any>>(WIN_MAIN_RENDERER_EVENT_NAME.radio_host_chat_send, async({ params }) => radioHostConversation('send', params))
+  mainHandle<Record<string, any>>(WIN_MAIN_RENDERER_EVENT_NAME.radio_host_chat_cancel, async({ params }) => radioHostConversation('cancel', params))
   mainHandle<boolean>(WIN_MAIN_RENDERER_EVENT_NAME.radio_sources_configure, async({ params }) => { await configureRadioSources(params) })
   mainHandle<{ request: RadioSourceRequest, refresh: boolean, failedUrl?: string, timeoutMs?: number }, RadioSourceResult>(WIN_MAIN_RENDERER_EVENT_NAME.radio_sources_resolve, async({ params }) => {
     return resolveRadioSource(params.request, params.refresh, params.failedUrl, params.timeoutMs)
